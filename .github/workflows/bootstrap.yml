@@ -7,12 +7,16 @@ name: Bootstrap
 #
 #   1. Unpacks the checked-in `bootstrap.tar.xz`, which carries the merged
 #      Bounty Mode bridge package (bountymode/config.py, bountymode/engine/*,
-#      the updated CLI / UI / runner / tests, README, pyproject and CI).
+#      the updated CLI / UI / runner / tests, README, pyproject and .gitignore).
 #   2. Vendors the offensive engine from its upstream source at a pinned
 #      revision into `engine/`, so Bounty Mode can drive it in-process.
 #
 # The job is idempotent -- it skips entirely once `engine/` exists -- and it
 # can be re-run by hand (Actions -> Bootstrap -> Run workflow).
+#
+# Note: the archive deliberately contains no .github/workflows files. This job
+# commits with the workflow's own GITHUB_TOKEN, which is not permitted to
+# create or modify workflow files; CI is committed directly instead.
 
 on:
   push:
@@ -28,7 +32,7 @@ permissions:
 env:
   # SHA-256 of bootstrap.tar.xz, verified before unpacking so a truncated or
   # altered archive fails loudly instead of silently shipping the wrong tree.
-  BOOTSTRAP_SHA256: 8ee10ceae618f75662f4f8c594a88878cf35c2a3e7c8ac7d6ff5425f9d409a46
+  BOOTSTRAP_SHA256: d9c61eccaca88adec28fc03b5d55490cad1a14a057a96ca8e97f397a3daea196
   UPSTREAM_REPO: kkcyber2/bounty-machine
   UPSTREAM_SHA: 6e5b18a8d3ada9b1bf22f7c4c0302df84d82d8bf
   UPSTREAM_ORIGIN: valosd453-bit/AI-red-team
@@ -134,5 +138,5 @@ jobs:
           # checkout left us on a branch or a detached head.
           echo "--- branch ---"; git rev-parse --abbrev-ref HEAD
           echo "--- remote ---"; git remote -v
-          echo "--- ahead ---";  git log --oneline -1
+          echo "--- head ---";   git log --oneline -1
           git push origin HEAD:main

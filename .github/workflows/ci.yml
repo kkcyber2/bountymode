@@ -22,7 +22,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[all]"
 
       - name: Run tests
         run: python -m pytest -q
@@ -30,5 +30,49 @@ jobs:
       - name: Smoke-test the CLI
         run: |
           python -m bountymode techniques
+          python -m bountymode domains
+          python -m bountymode models
           python -m bountymode scope import examples/policy-example.md --program acme -o /tmp/scope.json
           python -m bountymode check /tmp/scope.json api.acme.com --technique prompt_injection
+
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect the vendored engine
+        id: engine
+        run: |
+          if [ -f engine/forgeguard_bridge.py ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::engine/ is not vendored in this checkout -- skipping engine checks"
+          fi
+
+      - name: Set up Python
+        if: steps.engine.outputs.present == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        if: steps.engine.outputs.present == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+
+      - name: Engine integration (in-process, offline model)
+        if: steps.engine.outputs.present == 'true'
+        run: |
+          python -m bountymode engine --families
+          python -m pytest tests/test_engine_integration.py -q
+          python examples/demo_offline.py
+
+      - name: Engine HTTP facade smoke test
+        if: steps.engine.outputs.present == 'true'
+        run: |
+          python -m bountymode.engine.server --port 8099 --no-auth &
+          sleep 2
+          curl -fsS http://127.0.0.1:8099/health
+          kill %1
