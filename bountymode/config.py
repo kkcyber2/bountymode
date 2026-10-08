@@ -72,6 +72,35 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 CONFIG_ENV = "BOUNTYMODE_CONFIG"
 DEFAULT_CONFIG_FILES = ("bountymode.json", ".bountymode.json")
 
+#: API-key environment variable -> the OpenAI-compatible base URL that key
+#: belongs to.  A key is only valid with the provider that issued it, so the
+#: base URL travels with it; otherwise an ambient OPENAI_API_KEY would be sent
+#: to OpenRouter (or the reverse) and every call would fail with an opaque 401.
+PROVIDER_BASE_URLS: Dict[str, str] = {
+    "OPENROUTER_API_KEY": DEFAULT_BASE_URL,
+    "GROQ_API_KEY": "https://api.groq.com/openai/v1",
+    "OPENAI_API_KEY": "https://api.openai.com/v1",
+}
+
+#: A model to fall back to when a provider key is picked up from the ambient
+#: environment and the caller did not name a model.  The OpenRouter default is
+#: a ``:free`` route, which only makes sense on OpenRouter.
+PROVIDER_DEFAULT_MODELS: Dict[str, str] = {
+    "OPENROUTER_API_KEY": FREE_MODEL_DEFAULT,
+    "GROQ_API_KEY": "llama-3.3-70b-versatile",
+    "OPENAI_API_KEY": "gpt-4o-mini",
+}
+
+#: Preference order when several provider keys are present.  An explicit
+#: BOUNTYMODE_LLM_API_KEY comes first, then OpenRouter -- this project's
+#: default, and the only free option.
+PROVIDER_KEY_ORDER = (
+    "BOUNTYMODE_LLM_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GROQ_API_KEY",
+    "OPENAI_API_KEY",
+)
+
 
 # --------------------------------------------------------------------------- #
 # settings                                                                     #
@@ -162,10 +191,24 @@ def _from_env(env: Dict[str, str]) -> Dict[str, Any]:
         llm["model"] = env["BOUNTYMODE_LLM_MODEL"]
     if env.get("BOUNTYMODE_LLM_BASE_URL"):
         llm["base_url"] = env["BOUNTYMODE_LLM_BASE_URL"]
-    for key in ("BOUNTYMODE_LLM_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY"):
-        if env.get(key):
-            llm["api_key"] = env[key]
-            break
+    for key in PROVIDER_KEY_ORDER:
+        if not env.get(key):
+            continue
+        llm["api_key"] = env[key]
+        # Bind the base URL to the provider that issued the key, unless an
+        # explicit base URL was given.
+        provider_url = PROVIDER_BASE_URLS.get(key)
+        if provider_url and not env.get("BOUNTYMODE_LLM_BASE_URL"):
+            llm["base_url"] = provider_url
+        # A provider key found in the ambient environment must not drag the
+        # OpenRouter-only default model along to that provider.
+        if (
+            key in PROVIDER_DEFAULT_MODELS
+            and not env.get("BOUNTYMODE_MODEL")
+            and not env.get("BOUNTYMODE_LLM_MODEL")
+        ):
+            llm["model"] = PROVIDER_DEFAULT_MODELS[key]
+        break
     if env.get("BOUNTYMODE_ENGINE_INTENSITY"):
         eng["intensity"] = env["BOUNTYMODE_ENGINE_INTENSITY"]
     if env.get("BOUNTYMODE_ENGINE_MODEL"):
