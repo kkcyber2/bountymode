@@ -246,3 +246,26 @@ def test_no_key_is_not_an_error_for_the_client():
     result = client.chat("hello")
     assert result.ok is False
     assert "no API key" in result.error
+
+
+def test_base_url_follows_the_provider_that_issued_the_key():
+    # An ambient OpenAI key must not be sent to OpenRouter: the base URL binds
+    # to the provider, and the OpenRouter-only default model is not dragged in.
+    cfg = load_config(env={"OPENAI_API_KEY": "sk-not-real"})
+    assert cfg.llm.base_url == "https://api.openai.com/v1"
+    assert cfg.llm.model == "gpt-4o-mini"
+
+    cfg = load_config(env={"OPENROUTER_API_KEY": "sk-or-not-real"})
+    assert cfg.llm.base_url == "https://openrouter.ai/api/v1"
+    assert cfg.llm.model == FREE_MODEL_DEFAULT
+
+    # An explicit base URL always wins over the provider mapping.
+    cfg = load_config(env={
+        "OPENAI_API_KEY": "sk-not-real",
+        "BOUNTYMODE_LLM_BASE_URL": "https://my-gateway.internal/v1",
+    })
+    assert cfg.llm.base_url == "https://my-gateway.internal/v1"
+
+    # An explicit model always wins over the provider default.
+    cfg = load_config(env={"OPENAI_API_KEY": "sk-not-real", "BOUNTYMODE_MODEL": "gpt-4o"})
+    assert cfg.llm.model == "gpt-4o"
