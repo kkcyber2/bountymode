@@ -13,6 +13,10 @@ network, and they do not require an API key.  They assert three things:
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from bountymode.config import FREE_MODEL_DEFAULT, load_config, reset_config_cache
 from bountymode.engine import (
     ChatClient,
@@ -28,6 +32,16 @@ from bountymode.engine.local import _normalise, _resolve_intensity
 from bountymode.models import ProgramScope, ScopeTarget, Technique
 from bountymode.runner.adapter import EngineResult
 
+#: The whole module is about the vendored engine, so it is gated on its
+#: presence.  A checkout that has not vendored `engine/` yet (for example the
+#: first CI run of a fresh clone, before the bootstrap job has completed)
+#: skips these tests rather than failing -- the dedicated CI job reports an
+#: absent engine explicitly.
+pytestmark = pytest.mark.skipif(
+    not engine_available(),
+    reason="engine/ is not vendored in this checkout",
+)
+
 
 # --------------------------------------------------------------------------- #
 # catalogue
@@ -35,7 +49,9 @@ from bountymode.runner.adapter import EngineResult
 
 def test_engine_directory_is_present():
     assert engine_available() is True
-    assert engine_root().endswith("engine")
+    root = Path(engine_root())
+    assert root.name == "engine"
+    assert (root / "forgeguard_bridge.py").is_file()
 
 
 def test_catalogue_is_populated_from_the_engine_registry():
