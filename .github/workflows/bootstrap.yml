@@ -38,6 +38,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and a persisted token: the final step pushes a commit
+          # back to main, which needs both a real ref and credentials.
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Guard -- already bootstrapped?
         id: guard
@@ -115,7 +120,7 @@ jobs:
 
           echo "engine source files: $(find engine -type f | wc -l)"
 
-      - name: Commit
+      - name: Commit and push
         if: steps.guard.outputs.skip != 'true'
         run: |
           set -euo pipefail
@@ -124,5 +129,10 @@ jobs:
           git add -A
           git commit -m "Merge the offensive engine into this repository [bootstrap]" \
                      -m "Vendors the upstream engine into engine/ and applies the merged Bounty Mode bridge so it can be driven in-process, with no second repository and no engine URL."
-          git pull --rebase origin main || true
-          git push
+
+          # Diagnostics, then an explicit refspec. HEAD:main works whether the
+          # checkout left us on a branch or a detached head.
+          echo "--- branch ---"; git rev-parse --abbrev-ref HEAD
+          echo "--- remote ---"; git remote -v
+          echo "--- ahead ---";  git log --oneline -1
+          git push origin HEAD:main
