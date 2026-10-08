@@ -26,7 +26,9 @@ from typing import Any, Dict, List, Optional
 
 from .authority.gate import Approval, AuthorizationGate
 from .authority.stop_conditions import StopConditionEngine, StopConditions
+from .config import load_config
 from .dedupe.registry import DedupRegistry
+from .engine import build_local_dispatch, default_catalogue, engine_available
 from .evidence.redactor import Redactor
 from .evidence.vault import EvidenceVault
 from .models import Finding, ProgramScope, Technique
@@ -83,6 +85,22 @@ def _technique_from_dict(raw: Any) -> Technique:
     raise ValueError(f"bad technique entry: {raw!r}")
 
 
+class _AdapterRegistry:
+    """Expose a DomainAdapter through the runner's TechniqueRegistry API."""
+
+    def __init__(self, adapter: Any) -> None:
+        self._adapter = adapter
+
+    def require(self, technique_id: str) -> Technique:
+        return self._adapter.require(technique_id)
+
+    def get(self, technique_id: str) -> Optional[Technique]:
+        return self._adapter.technique(technique_id)
+
+    def all(self) -> List[Technique]:
+        return self._adapter.techniques()
+
+
 # --------------------------------------------------------------------------- #
 # command implementations
 # --------------------------------------------------------------------------- #
@@ -116,6 +134,81 @@ def cmd_domains(args: argparse.Namespace) -> int:
     from .domains import DEFAULT_REGISTRY
 
     _print({"domains": DEFAULT_REGISTRY.describe()})
+    return EXIT_OK
+
+
+def cmd_models(args: argparse.Namespace) -> int:
+    """Show the effective model configuration and, optionally, probe it."""
+    cfg = load_config(path=args.config)
+    info = {
+        "source": cfg.source,
+        "llm": cfg.llm.to_dict(redact=True),
+        "roles": {role: cfg.role_model(role) for role in ("generate", "judge", "multimodal")},
+    }
+    if not args.check:
+        _print(info)
+        if not cfg.llm.configured:
+            print(
+                "\nNo API key set. Export OPENROUTER_API_KEY (or BOUNTYMODE_LLM_API_KEY) "
+                "to enable live calls; everything else works offline.",
+                file=sys.stderr,
+            )
+        return EXIT_OK
+
+    from .engine.llm import ChatClient
+
+    if not cfg.llm.configured:
+        info["check"] = {"attempted": False, "reason": "no API key configured"}
+        _print(info)
+        return EXIT_OK
+
+    candidates = [cfg.llm.model] + [m for m in cfg.llm.fallbacks if m != cfg.llm.model]
+    results = []
+    for model in candidates:
+        client = ChatClient(
+            model=model, api_key=cfg.llm.api_key, base_url=cfg.llm.base_url, timeout=30.0
+        )
+        probe = client.reachable()
+        results.append(
+            {
+                "model": model,
+                "ok": probe.ok,
+                "latency_text": (probe.text or "").strip()[:40],
+                "error": probe.error,
+            }
+        )
+        if probe.ok:
+            break
+    info["check"] = {"attempted": True, "results": results,
+                     "working": next((r["model"] for r in results if r["ok"]), None)}
+    _print(info)
+    return EXIT_OK
+
+
+def cmd_engine(args: argparse.Namespace) -> int:
+    """Inspect the vendored engine: availability, catalogue and roles."""
+    cfg = load_config(path=args.config)
+    cat = default_catalogue()
+    info = {
+        "engine_available": engine_available(),
+        "engine_dir": __import__("bountymode.engine.paths", fromlist=["engine_root"]).engine_root(),
+        "catalogue": cat.stats(),
+        "intensity": cfg.engine.intensity,
+        "offline": cfg.engine.offline,
+    }
+    if args.families:
+        info["families"] = cat.families()
+    if args.techniques:
+        info["levels"] = cat.levels()
+        info["techniques"] = cat.describe()
+    _print(info)
+    if not info["engine_available"]:
+        print(
+            "\nThe engine directory was not found. Set BOUNTYMODE_ENGINE_PATH or run "
+            "from the repository root.",
+            file=sys.stderr,
+        )
+        return EXIT_BLOCKED
     return EXIT_OK
 
 
@@ -208,25 +301,55 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     dispatch = None
     live = bool(args.live)
-    if live:
+    in_process = bool(getattr(args, "in_process", False))
+    if live and in_process:
+        print("error: --live and --in-process are mutually exclusive.", file=sys.stderr)
+        return EXIT_USAGE
+
+    # Resolve the domain adapter: the case file may pin one, else --domain,
+    # else the native AI/LLM domain.
+    domain = getattr(args, "domain", None) or case.get("domain") or "ai_llm"
+    from .domains import DEFAULT_REGISTRY
+
+    domain_adapter = DEFAULT_REGISTRY.get(domain)
+
+    if in_process:
+        if domain != "ai_llm":
+            print(
+                f"warning: --in-process drives the AI/LLM engine; domain {domain!r} "
+                "falls back to its own (dry-run) dispatch.",
+                file=sys.stderr,
+            )
+        cfg = load_config()
+        offline = bool(getattr(args, "offline", False))
+        dispatch = build_local_dispatch(
+            model=args.engine_model or cfg.engine.model or cfg.llm.model,
+            intensity=getattr(args, "intensity", None) or cfg.engine.intensity,
+            offline=offline,
+            simulate_vulnerable=offline,
+        )
+    elif live:
         if not args.engine:
             print("error: --live requires --engine <url>.", file=sys.stderr)
             return EXIT_USAGE
-        adapter = AgathonAdapter(args.engine, token=args.token or "")
+        remote = AgathonAdapter(args.engine, token=args.token or "")
 
         def dispatch(t: Technique, tgt: str) -> EngineResult:  # noqa: E306
-            return adapter.run_test(t, tgt)
+            return remote.run_test(t, tgt)
 
     runner = CaseRunner(
         gate=gate,
         stops=stops,
         vault=vault,
         dedup=dedup,
+        registry=_AdapterRegistry(domain_adapter),
+        builder=domain_adapter,
         dispatch=dispatch,
     )
 
     print(f"Case '{case.get('id', 'case')}' against {target}")
-    print(f"Mode: {'LIVE' if live else 'DRY RUN (no engine calls)'}")
+    mode = "IN-PROCESS ENGINE" if in_process else ("LIVE (remote engine)" if live else "DRY RUN (no engine calls)")
+    print(f"Mode: {mode}")
     print(f"Scope: {scope.program}  |  techniques: {len(technique_ids)}\n")
 
     result = runner.run(case.get("id", "case"), scope, target, technique_ids)
@@ -317,6 +440,18 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("domains", help="list the registered domain adapters")
     d.set_defaults(func=cmd_domains)
 
+    md = sub.add_parser("models", help="show the model configuration (and probe it with --check)")
+    md.add_argument("--config", default=None, help="path to a bountymode.json config file")
+    md.add_argument("--check", action="store_true",
+                    help="probe the configured models live (needs an API key)")
+    md.set_defaults(func=cmd_models)
+
+    en = sub.add_parser("engine", help="inspect the vendored in-process engine")
+    en.add_argument("--config", default=None, help="path to a bountymode.json config file")
+    en.add_argument("--families", action="store_true", help="list attack families")
+    en.add_argument("--techniques", action="store_true", help="list every technique")
+    en.set_defaults(func=cmd_engine)
+
     t = sub.add_parser("techniques", help="list the technique catalogue")
     t.add_argument("--domain", default=None, help="list techniques for one domain")
     t.set_defaults(func=cmd_techniques)
@@ -327,13 +462,21 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--technique", action="append", default=None)
     c.set_defaults(func=cmd_check)
 
-    r = sub.add_parser("run", help="run a case (dry run unless --live)")
+    r = sub.add_parser("run", help="run a case (dry run unless --live/--in-process)")
     r.add_argument("case")
     r.add_argument("--scope", default=None)
     r.add_argument("-o", "--output", default=None)
-    r.add_argument("--live", action="store_true", help="actually dispatch to the engine")
-    r.add_argument("--engine", default=None, help="engine base URL (required with --live)")
+    r.add_argument("--live", action="store_true", help="dispatch to a remote engine over HTTP")
+    r.add_argument("--engine", default=None, help="remote engine base URL (required with --live)")
     r.add_argument("--token", default=None, help="internal scan token")
+    r.add_argument("--in-process", action="store_true",
+                   help="run the vendored engine in-process (no separate repo, no network hop)")
+    r.add_argument("--offline", action="store_true",
+                   help="with --in-process: use the deterministic offline model (no API key needed)")
+    r.add_argument("--intensity", default=None,
+                   choices=["recon", "standard", "aggressive", "greasy"],
+                   help="engine scan tier for --in-process runs")
+    r.add_argument("--engine-model", default=None, help="override the model used by the engine")
     r.set_defaults(func=cmd_run)
 
     tr = sub.add_parser("triage", help="score findings and rank them")

@@ -1,0 +1,32 @@
+# ---------------------------------------------------------------------------
+# Agathon orchestrator — hard-pinned core (resolves in seconds, no backtracking).
+# Garak/LiteLLM installed separately with --no-deps (see railway.toml buildCommand).
+# ---------------------------------------------------------------------------
+
+requests==2.31.0
+httpx==0.27.2
+httpcore==1.0.5
+openai==1.45.0
+python-dotenv==1.0.1
+tenacity==8.2.3
+tqdm==4.66.2
+beautifulsoup4==4.12.3
+numpy==1.26.4
+pillow==10.2.0
+playwright==1.42.0
+dnspython==2.6.1
+
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+pydantic==2.6.1
+pydantic-settings==2.1.0
+python-multipart==0.0.9
+groq==0.13.1
+
+# Supabase — 2.10+ aligned with httpx 0.27.x (fixes proxy kwarg crash on Railway)
+supabase==2.10.0
+
+websockets==12.0
+aiohttp==3.9.3
+jsonschema==4.21.1
+jsonref==1.1.0

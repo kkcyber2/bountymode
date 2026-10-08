@@ -19,8 +19,10 @@ from pydantic import BaseModel, Field
 
 from ..authority.gate import Approval, AuthorizationGate
 from ..authority.stop_conditions import StopConditionEngine, StopConditions
+from ..config import load_config
 from ..dedupe.registry import DedupRegistry
 from ..domains import DEFAULT_REGISTRY
+from ..engine import build_local_dispatch, default_catalogue, engine_available
 from ..evidence.redactor import Redactor
 from ..evidence.vault import EvidenceVault
 from ..models import Finding, ProgramScope, Technique
@@ -79,6 +81,9 @@ class RunRequest(BaseModel):
     live: bool = False
     engine: Optional[str] = None
     token: Optional[str] = None
+    in_process: bool = False
+    offline: bool = True
+    intensity: str = "standard"
     approvals: List[Dict[str, Any]] = Field(default_factory=list)
 
 
@@ -199,6 +204,47 @@ def create_app() -> FastAPI:
             ],
         }
 
+    # -- config / engine --------------------------------------------------- #
+
+    @app.get("/api/config")
+    def config() -> Dict[str, Any]:
+        cfg = load_config()
+        return {
+            "source": cfg.source,
+            "llm": cfg.llm.to_dict(redact=True),
+            "engine": cfg.engine.to_dict(),
+            "roles": {r: cfg.role_model(r) for r in ("generate", "judge", "multimodal")},
+        }
+
+    @app.get("/api/engine")
+    def engine_info() -> Dict[str, Any]:
+        cat = default_catalogue()
+        return {
+            "available": engine_available(),
+            "catalogue": cat.stats(),
+            "families": cat.families(),
+            "intensity": load_config().engine.intensity,
+        }
+
+    @app.get("/api/engine/techniques")
+    def engine_techniques() -> Dict[str, Any]:
+        cat = default_catalogue()
+        return {"count": len(cat.entries()), "techniques": cat.describe()}
+
+    @app.post("/api/models/check")
+    def models_check() -> Dict[str, Any]:
+        cfg = load_config()
+        if not cfg.llm.configured:
+            return {"attempted": False, "reason": "no API key configured",
+                    "model": cfg.llm.model}
+        from ..engine.llm import ChatClient
+
+        client = ChatClient(model=cfg.llm.model, api_key=cfg.llm.api_key,
+                            base_url=cfg.llm.base_url, timeout=30.0)
+        probe = client.reachable()
+        return {"attempted": True, "model": cfg.llm.model, "ok": probe.ok,
+                "sample": (probe.text or "").strip()[:60], "error": probe.error}
+
     # -- scope ------------------------------------------------------------- #
 
     @app.post("/api/scope/import")
@@ -252,8 +298,22 @@ def create_app() -> FastAPI:
         vault = EvidenceVault(str(workdir / "evidence"), redactor=Redactor())
         dedup = DedupRegistry(str(workdir / "registry.json"))
 
+        if req.live and req.in_process:
+            raise HTTPException(400, "live and in_process are mutually exclusive")
+
         dispatch = None
-        if req.live:
+        mode = "dry-run"
+        if req.in_process:
+            cfg = load_config()
+            effective_offline = req.offline or cfg.engine.offline
+            dispatch = build_local_dispatch(
+                model=cfg.engine.model or cfg.llm.model,
+                intensity=req.intensity or cfg.engine.intensity,
+                offline=effective_offline,
+                simulate_vulnerable=effective_offline,
+            )
+            mode = "in-process-simulated" if effective_offline else "in-process-live"
+        elif req.live:
             if not req.engine:
                 raise HTTPException(400, "--live requires an engine URL")
             engine = AgathonAdapter(req.engine, token=req.token or "")
@@ -261,16 +321,21 @@ def create_app() -> FastAPI:
             def dispatch(t: Technique, tgt: str) -> EngineResult:  # noqa: E306
                 return engine.run_test(t, tgt)
 
+            mode = "remote-engine"
+
         runner = CaseRunner(
             gate=gate, stops=stops, vault=vault, dedup=dedup,
             registry=_DomainRegistryShim(adapter), dispatch=dispatch,
+            builder=adapter,
         )
         result = runner.run("ui-case", scope, req.target, req.techniques)
-        state["last_run"] = result.to_dict()
+        payload = result.to_dict()
+        payload["mode"] = mode
+        state["last_run"] = payload
         state["findings"] = result.findings
         state["vault"] = vault
         state["registry"] = dedup
-        return result.to_dict()
+        return payload
 
     # -- findings / evidence ----------------------------------------------- #
 

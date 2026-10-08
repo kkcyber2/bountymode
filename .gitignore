@@ -33,6 +33,10 @@ evidence/
 secrets.json
 credentials.json
 
+# --- Engine runtime artifacts (written to the CWD on a run) ---
+/redteam.log
+/prompts/
+
 # --- Editors / OS ---
 .vscode/
 .idea/

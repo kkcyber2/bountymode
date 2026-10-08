@@ -41,6 +41,15 @@ from .errors import (
     ScopeViolationError,
     StopConditionError,
 )
+from .config import BountyModeConfig, load_config
+from .engine import (
+    ChatClient,
+    EngineCatalogue,
+    LocalEngine,
+    build_local_dispatch,
+    default_catalogue,
+    engine_available,
+)
 from .models import (
     AuthorizationDecision,
     Finding,
@@ -67,7 +76,7 @@ from .runner import (
     TechniqueRegistry,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",
@@ -78,6 +87,16 @@ __all__ = [
     "StopConditionError",
     "EvidenceError",
     "ReportError",
+    # config
+    "BountyModeConfig",
+    "load_config",
+    # engine
+    "ChatClient",
+    "EngineCatalogue",
+    "LocalEngine",
+    "build_local_dispatch",
+    "default_catalogue",
+    "engine_available",
     # models
     "Severity",
     "Technique",

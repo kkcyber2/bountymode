@@ -11,6 +11,12 @@ It ships with four domains out of the box — **AI/LLM red-teaming**, **web/API*
 **cloud/infrastructure** and **CI/CD supply chain** — and adding a fifth costs
 an *adapter*, not a fork.
 
+The offensive **engine is vendored in this same repository** (`engine/`) and is
+driven **in-process**: no second repository, no scan-API server, no network hop
+for a local run. It still contains all of the real attack code — 39 techniques
+across 25 families, the ~100-vector library, the plugin autodiscovery, the
+fail-closed attack tiers and the sandbox runner.
+
 > **Authorized security testing only.** Bounty Machine enforces scope and
 > authorization *by design*. It refuses to test anything outside an imported
 > program scope, blocks destructive techniques unconditionally, and defaults
@@ -23,6 +29,8 @@ an *adapter*, not a fork.
 - [What it is](#what-it-is)
 - [Install](#install)
 - [Quickstart](#quickstart)
+- [The engine (vendored, in-process)](#the-engine-vendored-in-process)
+- [Models & providers](#models--providers)
 - [The web UI](#the-web-ui)
 - [Architecture](#architecture)
 - [Domains](#domains)
@@ -61,14 +69,14 @@ structurally impossible:
 Requires **Python 3.9+**. The core has **zero runtime dependencies**.
 
 ```bash
-git clone https://github.com/kkcyber2/bounty-machine
-cd bounty-machine
+git clone https://github.com/kkcyber2/bountymode
+cd bountymode
 
-# core only (no dependencies)
+# core only -- the workflow layer has zero runtime dependencies
 pip install -e .
 
-# with the web UI and the test suite
-pip install -e ".[ui,dev]"
+# the engine needs its own deps; add the UI and the test suite too
+pip install -e ".[all]"
 ```
 
 Optional extras:
@@ -77,7 +85,9 @@ Optional extras:
 |---|---|---|
 | `yaml` | `PyYAML` | YAML scope / case files |
 | `ui` | `fastapi`, `uvicorn` | the local web UI |
-| `dev` | `pytest`, `PyYAML`, `fastapi`, `uvicorn`, `httpx` | running the tests |
+| `engine` | `requests`, `httpx`, `pydantic`, `tenacity`, `beautifulsoup4`, `numpy`, `pillow`, … | running the vendored engine in-process |
+| `dev` | `pytest`, plus the UI and engine extras | running the tests |
+| `all` | everything above | a full checkout |
 
 ---
 
@@ -108,10 +118,17 @@ here — before anything touches the network.
 # dry run (default) — exercises the gate, vault and scorer, no network I/O
 bountymode run examples/case-example.yaml
 
-# live — dispatches to the engine, still gated
+# in-process -- drives the vendored engine in THIS repository, no extra server
+bountymode run examples/case-example.yaml --in-process --offline
+
+# remote -- dispatch to a separate engine over HTTP, still gated
 bountymode run examples/case-example.yaml --live \
   --engine https://engine.internal --token "$INTERNAL_SCAN_TOKEN"
 ```
+
+`--offline` pairs with `--in-process` to model a deliberately vulnerable mock
+target, so the whole pipeline (gate → engine → evidence → triage → report) is
+exercised with no API key and no network.
 
 ### 4. Triage and report
 
@@ -123,12 +140,114 @@ bountymode report triaged.json --platform hackerone --program acme-ai -o reports
 You now have a submittable Markdown writeup plus a structured JSON payload per
 finding, with redacted evidence attached.
 
-### 5. Explore the domains
+### 5. Explore the domains and the engine
 
 ```bash
 bountymode domains                          # list registered domains
 bountymode techniques --domain web_api      # techniques for one domain
+bountymode engine --families                # the vendored engine's live catalogue
+bountymode engine --techniques              # every technique the engine exposes
+bountymode models                           # effective model configuration
+bountymode models --check                   # live reachability probe (needs a key)
 ```
+
+---
+
+## The engine (vendored, in-process)
+
+The offensive engine lives in `engine/` in **this repository**. It is the real
+toolkit — nothing is stubbed — and Bounty Machine drives it **in-process**
+through `bountymode/engine/`:
+
+| Bridge module | Role |
+|---|---|
+| `engine/paths.py` | locates `engine/` and puts it on `sys.path` (override with `BOUNTYMODE_ENGINE_PATH`) |
+| `engine/catalogue.py` | reads the engine's **live** `REGISTRY` — no copied catalogue |
+| `engine/local.py` | `LocalEngine` — resolves a technique and calls the engine's own registry callable |
+| `engine/llm.py` | OpenAI-compatible client (`ChatClient`) + deterministic `OfflineClient` |
+| `engine/server.py` | optional local HTTP façade over the same engine |
+
+Three ways to run, all gated identically:
+
+| Mode | Flag | What happens |
+|---|---|---|
+| Dry run (**default**) | *none* | gate + vault + scorer only; no engine call |
+| **In-process** | `--in-process` | the vendored engine runs in this process |
+| Remote | `--live --engine URL` | dispatches to a separate engine over HTTP |
+
+`--in-process` also accepts `--offline` (deterministic mock target, no key) and
+`--intensity recon\|standard\|aggressive\|greasy` (the engine's fail-closed tiers).
+
+Need the engine as a service (a worker host, or a language boundary)?
+
+```bash
+python -m bountymode.engine.server --port 8088
+# GET /health · GET /bounty/techniques
+# POST /bounty/run-test · POST /v1/chat/completions
+```
+
+It binds to loopback and refuses to start without a token unless `--no-auth`
+is passed explicitly.
+
+---
+
+## Models & providers
+
+Any OpenAI-compatible endpoint works (OpenRouter, Groq, OpenAI, Together, a
+local Ollama or vLLM). The **default is OpenRouter's free tier**, so a red-team
+workload runs end to end at no cost.
+
+| Setting | Environment variable | Default |
+|---|---|---|
+| Model | `BOUNTYMODE_MODEL` | `openrouter/free` |
+| API key | `OPENROUTER_API_KEY` (or `BOUNTYMODE_LLM_API_KEY`) | *(unset — offline)* |
+| Base URL | `BOUNTYMODE_LLM_BASE_URL` | `https://openrouter.ai/api/v1` |
+| Engine tier | `BOUNTYMODE_ENGINE_INTENSITY` | `standard` |
+| Engine model | `BOUNTYMODE_ENGINE_MODEL` | *(follows the model)* |
+| Engine path | `BOUNTYMODE_ENGINE_PATH` | `./engine` |
+| Offline | `BOUNTYMODE_OFFLINE=1` | *(off)* |
+
+**Default model: `openrouter/free`** — OpenRouter's free **auto-router**. It is
+the default because it selects among whichever free models are available at the
+time, so the configuration keeps working as the free roster rotates; a pinned
+free model would break the moment that model is retired.
+
+Named free models are used for the roles where a specific capability matters,
+and all are in the fallback list (verified against OpenRouter's live model
+list):
+
+| Role | Default | Why |
+|---|---|---|
+| `generate` | `nvidia/nemotron-3-super-120b-a12b:free` | strong reasoning for payload/test-case generation |
+| `judge` | `nvidia/nemotron-3-ultra-550b-a55b:free` | largest free reasoner for response classification |
+| `multimodal` | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | text + image + audio + video input |
+
+**Fallbacks** (tried in order if the primary is unavailable):
+`nvidia/nemotron-3-super-120b-a12b:free` → `google/gemma-4-31b-it:free` →
+`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` →
+`nvidia/nemotron-3.5-lightning:free` → `liquid/lfm-2.5-2.6b:free`.
+
+Swap models without editing code:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+export BOUNTYMODE_MODEL="nvidia/nemotron-3-super-120b-a12b:free"
+bountymode models           # show the effective configuration
+bountymode models --check   # live reachability probe against each candidate
+```
+
+Or point at another provider entirely:
+
+```bash
+export BOUNTYMODE_LLM_BASE_URL="https://api.groq.com/openai/v1"
+export BOUNTYMODE_LLM_API_KEY="gsk_..."
+export BOUNTYMODE_MODEL="llama-3.3-70b-versatile"
+```
+
+A JSON config file (`bountymode.json`, or `$BOUNTYMODE_CONFIG`) provides the
+same keys in `llm` / `engine` blocks. **No key is not an error**: the workflow
+layer and every offline path keep working, and only live model calls are
+disabled.
 
 ---
 
@@ -147,8 +266,10 @@ Then open **http://127.0.0.1:8765**.
 
 The UI exposes the full workflow (import scope → check authorization → run →
 findings → triage → report → dedupe/retest) plus a panel for every upgrade
-module. Runs are **dry by default**; a live run requires an engine URL and
-still passes through the gate and stop-conditions.
+module, the model configuration and the engine catalogue. Runs are **dry by
+default**; `--in-process` drives the vendored engine locally, and a `--live`
+run requires an engine URL. Everything still passes through the gate and the
+stop-conditions.
 
 ---
 
@@ -198,6 +319,13 @@ bountymode/
 ├── models.py            core dataclasses (ProgramScope, Technique, Finding, Observation)
 ├── errors.py            exception hierarchy
 ├── cli.py               command-line interface
+├── config.py            configuration (models, engine, run defaults)
+├── engine/              the in-process bridge to the vendored engine
+│   ├── catalogue.py     reads the engine's live REGISTRY
+│   ├── llm.py           OpenAI-compatible client + offline client
+│   ├── local.py         LocalEngine -- dispatch techniques in-process
+│   ├── paths.py         locate + import the engine directory
+│   └── server.py        optional local HTTP façade over the engine
 ├── scope/               importer (policy → scope) + matcher (target → scope)
 ├── authority/           gate.py (the choke-point) + stop_conditions.py (circuit breakers)
 ├── evidence/            redactor.py + vault.py (hash-chained, append-only)
@@ -300,10 +428,13 @@ bountymode scope show <scope.json>                           print a scope
 bountymode domains                                           list registered domains
 bountymode techniques [--domain NAME]                        list the technique catalogue
 bountymode check <scope.json> <target> [--technique ID]      dry-run the authorization gate
-bountymode run <case.yaml> [--scope S] [--live --engine URL --token T] [-o DIR]
+bountymode run <case.yaml> [--scope S] [--in-process [--offline] [--intensity TIER]]
+                              [--live --engine URL --token T] [-o DIR]
 bountymode triage <findings.json> [--min-score N] [-o OUT]   score and rank findings
 bountymode report <findings.json> [--platform hackerone|bugcrowd] [--program P] [-o DIR]
 bountymode retest <finding_id> [--registry R] [--fixed]      record a regression retest
+bountymode models [--check]                                  show / probe the model config
+bountymode engine [--families] [--techniques]                inspect the vendored engine
 ```
 
 Exit codes: `0` success · `2` usage error · `3` blocked (nothing authorized).
@@ -335,12 +466,18 @@ The scope's numbers are **ceilings**: a caller may tighten them, never raise
 them. `economic_denial`, `destructive` and `malware` are merged into
 `prohibited_techniques` unconditionally, whatever the policy says.
 
-Engine connection (live runs only):
+Engine connection, models and run defaults:
 
 | Setting | Meaning |
 |---|---|
-| `--engine URL` | base URL of the red-teaming engine |
+| `--in-process` | run the vendored engine in this process (no server, no network hop) |
+| `--offline` | with `--in-process`: deterministic mock target, no API key |
+| `--intensity` | engine scan tier: `recon` / `standard` / `aggressive` / `greasy` |
+| `--engine-model` | override the model the engine uses |
+| `--engine URL` | base URL of a remote engine (with `--live`) |
 | `--token TOKEN` | internal scan token (never hard-code; pass via env) |
+
+See [Models & providers](#models--providers) for the environment variables.
 
 ---
 
@@ -353,7 +490,8 @@ python -m pytest -q
 
 The suite covers the scope matcher, the authorization gate, stop-conditions,
 the redactor and vault, the CVSS calculator, the report generator, the case
-runner, all four domains, all thirteen upgrade modules, and every UI endpoint.
+runner, all four domains, all thirteen upgrade modules, every UI endpoint, and
+the in-process engine integration (catalogue, dispatch, configuration).
 
 ---
 

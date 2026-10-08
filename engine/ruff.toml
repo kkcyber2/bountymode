@@ -1,0 +1,24 @@
+# Ruff baseline for the AI-red-team engine.
+#
+# The engine predates ruff and carries ~130 legacy violations (unused imports,
+# f-strings without placeholders, ambiguous names, etc.) across ~30 modules.
+# Fixing them all in one pass is out of scope and risky (some "unused" symbols
+# are re-exported / used by reflection). This config adopts ruff incrementally:
+# the pre-existing codes are ignored so `ruff check .` is green on main, while
+# NEW violations outside this set (syntax errors, E722 bare-except, etc.) are
+# still caught. Tighten this list over time as legacy modules are cleaned up.
+
+target-version = "py311"
+line-length = 120
+
+[lint]
+ignore = [
+  "E501",   # line too long (legacy + long WAF expressions)
+  "E402",   # module-level import not at top (orchestrator intentionally orders imports)
+  "E741",   # ambiguous variable name (legacy)
+  "F401",   # unused import (legacy; some are re-exports)
+  "F541",   # f-string without placeholders (legacy)
+  "F811",   # redefinition while unused (legacy)
+  "F821",   # undefined name (legacy forward refs)
+  "F841",   # unused variable (legacy)
+]

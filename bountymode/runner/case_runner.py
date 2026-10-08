@@ -88,6 +88,7 @@ class CaseRunner:
         dedup: Optional[DedupRegistry] = None,
         scorer: Optional[TriageScorer] = None,
         dispatch: Optional[DispatchFn] = None,
+        builder: Optional[Any] = None,
         sleep_between: float = 0.0,
     ) -> None:
         self.gate = gate
@@ -96,6 +97,9 @@ class CaseRunner:
         self.registry = registry or TechniqueRegistry()
         self.dedup = dedup
         self.scorer = scorer or TriageScorer()
+        # A domain adapter supplies domain-specific impact/remediation/taxonomy
+        # text; without one, the AI/LLM finding builder is the default.
+        self._builder = builder or FindingBuilder()
         self._sleep_between = sleep_between
         if dispatch is not None:
             self._dispatch = dispatch
@@ -152,7 +156,13 @@ class CaseRunner:
 
             if engine_result.success:
                 self.stops.record_success()
-                finding = FindingBuilder().build(engine_result)
+                # A DomainAdapter exposes build_finding(); the default
+                # FindingBuilder exposes build().  Support both so a runner can
+                # be driven by either.
+                if hasattr(self._builder, "build"):
+                    finding = self._builder.build(engine_result)
+                else:
+                    finding = self._builder.build_finding(engine_result)
                 if self.dedup is not None:
                     dd = self.dedup.add(finding)
                     if dd.verdict != DedupVerdict.NEW:
