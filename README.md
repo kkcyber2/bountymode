@@ -155,22 +155,22 @@ still passes through the gate and stop-conditions.
 ## Architecture
 
 ```
-                    ┌──────────────────────────────────────────────┐
+                    ┌─────────────────────────────────────────────┐
                     │              Domain adapters                 │
                     │  ai_llm · web_api · cloud · cicd · (yours)   │
                     │  ── technique catalogue                      │
                     │  ── dispatch(technique, target) -> result    │
                     │  ── classify / impact / remediation / taxonomy│
-                    └──────────────────────┬───────────────────────┘
+                    └──────────────────────┬──────────────────────┘
                                             │
    scope.json ──► ScopeImporter ──► ProgramScope
                                             │
                                             ▼
-   ┌──────────────┐   ALLOW    ┌────────────────────┐
+   ┌──────────────┐   ALLOW    ┌─────────────────────┐
    │ Authorization│───────────►│    CaseRunner      │
    │    Gate      │  DENY /    │  (one technique    │
    │ (deny-by-    │  NEEDS_    │   at a time)       │
-   │  default)    │  HUMAN     └─────────┬──────────┘
+   │  default)    │  HUMAN     └─────────┬─────────┘
    └──────────────┘                      │
                                          ▼
    ┌──────────────────┐        ┌──────────────────┐
