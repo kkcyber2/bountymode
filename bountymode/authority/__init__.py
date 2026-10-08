@@ -1,11 +1,12 @@
-"""Authorization: the deny-by-default gate and the stop-condition engine."""
+"""Authorization and stop-condition enforcement."""
 
 from .gate import Approval, AuthorizationGate
-from .stop_conditions import StopConditionEngine, StopConditions
+from .stop_conditions import StopConditionEngine, StopConditions, StopState
 
 __all__ = [
     "Approval",
     "AuthorizationGate",
     "StopConditionEngine",
     "StopConditions",
+    "StopState",
 ]
