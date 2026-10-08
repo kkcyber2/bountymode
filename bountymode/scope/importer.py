@@ -29,7 +29,7 @@ from ..models import OutOfScopeRule, ProgramScope, ScopeTarget
 
 # --------------------------------------------------------------------------- #
 # Keyword maps
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
 
 #: Policy phrases that map onto a technique id we can forbid.
 _PROHIBITED_PATTERNS: List[Tuple[re.Pattern, str]] = [
@@ -264,7 +264,7 @@ class ScopeImporter:
         p = pattern.strip().lower()
         host = re.sub(r"^https?://", "", p).split("/")[0].split(":")[0]
         if host in _DENY_HOSTS:
-            self.warnings.append(f'refused unsafe host in policy: {host}')
+            self.warnings.append(f"refused unsafe host in policy: {host}")
             return False
         if host.endswith(".local") or host.endswith(".internal"):
             return False

@@ -21,8 +21,29 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import json
-build_parser
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from .authority.gate import Approval, AuthorizationGate
+from .authority.stop_conditions import StopConditionEngine, StopConditions
+from .dedupe.registry import DedupRegistry
+from .evidence.redactor import Redactor
+from .evidence.vault import EvidenceVault
+from .models import Finding, ProgramScope, Technique
+from .report.generator import ReportGenerator
+from .runner.adapter import AgathonAdapter, EngineResult, TechniqueRegistry
+from .runner.case_runner import CaseRunner
+from .scope.importer import ScopeImporter
+from .triage.scorer import TriageScorer
+
+EXIT_OK = 0
+EXIT_USAGE = 2
+EXIT_BLOCKED = 3
+
+
+# --------------------------------------------------------------------------- #
+# helpers
+# --------------------------------------------------------------------------- #
 
 def _load_yaml_or_json(path: str) -> Dict[str, Any]:
     p = Path(path)
@@ -33,7 +54,7 @@ def _load_yaml_or_json(path: str) -> Dict[str, Any]:
         import yaml  # type: ignore
     except ImportError as exc:  # pragma: no cover
         raise SystemExit(
-            "PYYAML is required for YAML case files. Install it or use JSON."
+            "PyYAML is required for YAML case files. Install it or use JSON."
         ) from exc
     return yaml.safe_load(text)
 
