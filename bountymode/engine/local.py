@@ -241,16 +241,25 @@ def build_local_dispatch(
     intensity: str = "standard",
     offline: bool = False,
     canned: Optional[Dict[str, str]] = None,
-    simulate_vulnerable: bool = False,
+    simulate_vulnerable: Optional[bool] = None,
 ) -> Callable[[Technique, str], EngineResult]:
     """Return a ``dispatch(technique, target) -> EngineResult`` for the runner.
 
-    ``offline`` swaps the live model client for the deterministic one; add
-    ``simulate_vulnerable`` to model a deliberately vulnerable mock target so an
-    offline run exercises the whole pipeline.
+    ``offline`` swaps the live model client for the deterministic one.
+
+    An offline run has to answer *something*, so unless the caller says
+    otherwise it models a deliberately vulnerable mock target: every reply then
+    looks like a successful compromise, which is what makes a dry run exercise
+    the whole pipeline (gate -> engine -> evidence -> triage -> report) end to
+    end.  Pass ``simulate_vulnerable=False`` for an offline run that should
+    mostly report *no* finding, or supply ``canned`` responses to script exact
+    outcomes.
     """
+    if simulate_vulnerable is None:
+        simulate_vulnerable = offline and not canned
+
     client: Optional[Any] = None
     if offline:
-        client = OfflineClient(canned=canned, simulate_vulnerable=simulate_vulnerable)
+        client = OfflineClient(canned=canned, simulate_vulnerable=bool(simulate_vulnerable))
     engine = LocalEngine(model=model, intensity=intensity, client=client)
     return engine.run_technique
