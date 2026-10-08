@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bountymode"
+version = "0.1.0"
+description = "Authorized AI bug-bounty workflow layer: scope enforcement, authorization gate, redacted evidence, triage scoring and HackerOne/Bugcrowd report generation."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Bounty Mode contributors" }]
+keywords = ["security", "bug-bounty", "red-teaming", "llm", "ai-security", "hackerone", "bugcrowd"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=5.4"]
+ui = ["fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["pytest>=7.0", "PyYAML>=5.4", "fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27"]
+
+[project.scripts]
+bountymode = "bountymode.cli:main"
+bountymode-ui = "bountymode.ui.app:main"
+
+[project.urls]
+Homepage = "https://github.com/kkcyber2/bounty-machine"
+
+[tool.setuptools.packages.find]
+include = ["bountymode*"]
+
+[tool.setuptools.package-data]
+bountymode = ["ui/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
