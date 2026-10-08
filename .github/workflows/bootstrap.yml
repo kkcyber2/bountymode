@@ -1,0 +1,128 @@
+name: Bootstrap
+
+# One-shot bootstrap for this repository.
+#
+# It does two things that are awkward to do by hand and are therefore scripted,
+# so the result is reproducible and auditable:
+#
+#   1. Unpacks the checked-in `bootstrap.tar.xz`, which carries the merged
+#      Bounty Mode bridge package (bountymode/config.py, bountymode/engine/*,
+#      the updated CLI / UI / runner / tests, README, pyproject and CI).
+#   2. Vendors the offensive engine from its upstream source at a pinned
+#      revision into `engine/`, so Bounty Mode can drive it in-process.
+#
+# The job is idempotent -- it skips entirely once `engine/` exists -- and it
+# can be re-run by hand (Actions -> Bootstrap -> Run workflow).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bootstrap.tar.xz"
+      - ".github/workflows/bootstrap.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # SHA-256 of bootstrap.tar.xz, verified before unpacking so a truncated or
+  # altered archive fails loudly instead of silently shipping the wrong tree.
+  BOOTSTRAP_SHA256: 8ee10ceae618f75662f4f8c594a88878cf35c2a3e7c8ac7d6ff5425f9d409a46
+  UPSTREAM_REPO: kkcyber2/bounty-machine
+  UPSTREAM_SHA: 6e5b18a8d3ada9b1bf22f7c4c0302df84d82d8bf
+  UPSTREAM_ORIGIN: valosd453-bit/AI-red-team
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard -- already bootstrapped?
+        id: guard
+        run: |
+          if [ -f engine/forgeguard_bridge.py ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::engine/ is already vendored -- nothing to do"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Unpack the bridge package
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          echo "${BOOTSTRAP_SHA256}  bootstrap.tar.xz" | sha256sum -c -
+          tar -xJf bootstrap.tar.xz
+          rm -f bootstrap.tar.xz
+
+          # Fail loudly rather than committing a half-unpacked tree.
+          for f in \
+            bountymode/config.py \
+            bountymode/engine/__init__.py \
+            bountymode/engine/catalogue.py \
+            bountymode/engine/llm.py \
+            bountymode/engine/local.py \
+            bountymode/engine/paths.py \
+            bountymode/engine/server.py \
+            bountymode/cli.py \
+            bountymode/ui/app.py \
+            tests/test_engine_integration.py; do
+            test -f "$f" || { echo "::error::missing $f after unpack"; exit 1; }
+          done
+
+      - name: Vendor the engine from upstream
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/upstream.tar.gz \
+            "https://codeload.github.com/${UPSTREAM_REPO}/tar.gz/${UPSTREAM_SHA}"
+          mkdir -p /tmp/upstream
+          tar -xzf /tmp/upstream.tar.gz -C /tmp/upstream --strip-components=1
+
+          mkdir -p engine
+          for item in agathon api attacks clients core docker probes prompts tests utils \
+                      config.py forgeguard_bridge.py requirements.txt ruff.toml; do
+            if [ -e "/tmp/upstream/${item}" ]; then
+              cp -r "/tmp/upstream/${item}" engine/
+            fi
+          done
+
+          find engine \( -name '__pycache__' -o -name '*.pyc' -o -name '*.pyo' \) \
+            -prune -exec rm -rf {} +
+          rm -f engine/redteam.log
+
+          {
+            echo "# Vendored engine"
+            echo
+            echo "This directory is a vendored copy of the offensive AI red-teaming"
+            echo "engine. It is the engine's real source -- nothing here is stubbed."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Upstream project | \`${UPSTREAM_ORIGIN}\` |"
+            echo "| Fetched from | \`${UPSTREAM_REPO}\` |"
+            echo "| Revision | \`${UPSTREAM_SHA}\` |"
+            echo "| Vendored on | $(date -u +%Y-%m-%d) |"
+            echo "| Source files | $(find engine -type f | wc -l) |"
+            echo
+            echo "Bounty Mode drives it in-process through \`bountymode/engine/\`;"
+            echo "see the \"The engine\" section of the top-level README."
+            echo
+            echo "Re-vendor by running the **Bootstrap** workflow."
+          } > engine/VENDORED_ENGINE.md
+
+          echo "engine source files: $(find engine -type f | wc -l)"
+
+      - name: Commit
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          git config user.name  "bountymode-bootstrap"
+          git config user.email "bootstrap@users.noreply.github.com"
+          git add -A
+          git commit -m "Merge the offensive engine into this repository [bootstrap]" \
+                     -m "Vendors the upstream engine into engine/ and applies the merged Bounty Mode bridge so it can be driven in-process, with no second repository and no engine URL."
+          git pull --rebase origin main || true
+          git push
