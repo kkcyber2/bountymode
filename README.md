@@ -229,13 +229,33 @@ list):
 | `multimodal` | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | text + image + audio + video input |
 
 **Fallbacks** (tried in order if the primary is unavailable):
-`nvidia/nemotron-3-super-120b-a12b:free` → `liquid/lfm-2.5-2.6b:free` →
-`nvidia/nemotron-3.5-lightning:free` → `google/gemma-4-31b-it:free` →
+`nvidia/nemotron-3-super-120b-a12b:free` → `nvidia/nemotron-3.5-lightning:free` →
 `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`.
 
+The fallback chain is *live*, not decorative: `ChatClient.chat()` tries the
+requested model first and, if it errors **or returns no usable text**, walks the
+list until one answers. A `200` whose `content` is empty counts as a failure —
+free reasoning routes can spend the whole token budget on hidden reasoning and
+return `content: null`, which is useless for payload generation and judging.
+
+The roster is measured, not assumed. Probed against the live endpoint on
+2026-10-10 (3 calls each):
+
+| Model | Result | Median latency |
+|---|---|---|
+| `nvidia/nemotron-3-super-120b-a12b:free` | 3/3 ok | ~0.68 s |
+| `nvidia/nemotron-3.5-lightning:free` | 3/3 ok | ~0.62 s |
+| `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | 1/3 ok | ~1.6 s |
+
+Two models that used to be listed were dropped because they failed every probe:
+`liquid/lfm-2.5-2.6b:free` returned empty content (0/3) and
+`google/gemma-4-31b-it:free` returned `HTTP 429` (0/3). Re-add a model only after
+a fresh `bountymode models --check` shows it working.
+
 > Free-tier availability is shared and can be rate-limited upstream
-> (`HTTP 429` / `502 ResourceExhausted`). `models --check` reports the real
-> error per candidate and picks the first one that actually answers.
+> (`HTTP 429` / `502 ResourceExhausted`). `models --check` probes each candidate
+> in isolation (no fallback) and reports the real error per candidate, so it
+> picks the first one that actually answers.
 
 Swap models without editing code:
 
