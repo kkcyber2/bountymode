@@ -42,3 +42,7 @@ credentials.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# local live-validation scratch
+live-test/run-*/
+live-test/reports/
