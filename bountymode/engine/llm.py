@@ -106,27 +106,42 @@ class ChatClient:
 
     def chat(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         *,
+        messages: Optional[List[Dict[str, str]]] = None,
+        model: Optional[str] = None,
         system_message: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        json_mode: bool = False,
+        **_extra: Any,
     ) -> LLMResult:
+        """OpenAI-compatible completion.
+
+        Accepts either a single ``prompt`` (the engine's simple families) or a
+        full ``messages`` list (the engine's plugin families, which call
+        ``client.chat(model=..., messages=..., json_mode=...)``).  Unknown
+        keyword arguments are ignored, so a caller written against a richer
+        client never breaks the run.
+        """
         if not self.configured:
-            return LLMResult(text=NO_KEY_MARKER, model=self.model, ok=False,
+            return LLMResult(text=NO_KEY_MARKER, model=model or self.model, ok=False,
                              error="no API key configured (offline)")
 
-        messages: List[Dict[str, str]] = []
-        if system_message:
-            messages.append({"role": "system", "content": system_message})
-        messages.append({"role": "user", "content": prompt})
+        if messages is None:
+            messages = []
+            if system_message:
+                messages.append({"role": "system", "content": system_message})
+            messages.append({"role": "user", "content": prompt or ""})
 
-        payload = {
-            "model": self.model,
+        payload: Dict[str, Any] = {
+            "model": model or self.model,
             "messages": messages,
             "temperature": self.temperature if temperature is None else temperature,
             "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         body = json.dumps(payload).encode("utf-8")
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -173,10 +188,10 @@ class ChatClient:
 
 
 def _strip_reasoning(text: str) -> str:
-    """Drop ``<think>...</think>`` reasoning blocks some models emit."""
+    """Drop `` thinking...</think>`` reasoning blocks some models emit."""
     out = text
-    while "<think>" in out and "</think>" in out:
-        start = out.index("<think>")
+    while " thinking" in out and "</think>" in out:
+        start = out.index(" thinking")
         end = out.index("</think>") + len("</think>")
         out = out[:start] + out[end:]
     return out.strip()
