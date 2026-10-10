@@ -73,6 +73,9 @@ class ChatClient:
     timeout: float = 90.0
     max_attempts: int = 3
     extra_headers: Dict[str, str] = field(default_factory=dict)
+    #: Ordered fallback models.  When the primary model errors or returns no
+    #: usable text, ``chat`` walks this list instead of retrying a dead route.
+    fallbacks: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.base_url = (self.base_url or DEFAULT_BASE_URL).rstrip("/")
@@ -114,15 +117,22 @@ class ChatClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         json_mode: bool = False,
+        allow_fallback: bool = True,
         **_extra: Any,
     ) -> LLMResult:
-        """OpenAI-compatible completion.
+        """OpenAI-compatible completion with a working fallback chain.
 
         Accepts either a single ``prompt`` (the engine's simple families) or a
         full ``messages`` list (the engine's plugin families, which call
         ``client.chat(model=..., messages=..., json_mode=...)``).  Unknown
         keyword arguments are ignored, so a caller written against a richer
         client never breaks the run.
+
+        The requested model is tried first; if it errors or returns no usable
+        text, each model in :attr:`fallbacks` is tried in turn.  A 200 response
+        whose ``content`` is empty is a *failure*, not a success -- free
+        reasoning routes can spend the whole token budget on hidden reasoning
+        and return ``content: null``, which is useless downstream.
         """
         if not self.configured:
             return LLMResult(text=NO_KEY_MARKER, model=model or self.model, ok=False,
@@ -134,8 +144,30 @@ class ChatClient:
                 messages.append({"role": "system", "content": system_message})
             messages.append({"role": "user", "content": prompt or ""})
 
+        primary = model or self.model
+        candidates = [primary]
+        if allow_fallback:
+            candidates += [m for m in self.fallbacks if m and m != primary]
+
+        last = LLMResult(text="", model=primary, ok=False, error="no attempt made")
+        for candidate in candidates:
+            result = self._chat_once(candidate, messages, temperature, max_tokens, json_mode)
+            if result.ok and (result.text or "").strip():
+                return result
+            last = result
+        return last
+
+    def _chat_once(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        json_mode: bool,
+    ) -> LLMResult:
+        """One model, with bounded retries for transient (429/503) errors."""
         payload: Dict[str, Any] = {
-            "model": model or self.model,
+            "model": model,
             "messages": messages,
             "temperature": self.temperature if temperature is None else temperature,
             "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
@@ -162,27 +194,32 @@ class ChatClient:
                     data = json.loads(resp.read().decode("utf-8") or "{}")
                 choices = data.get("choices") or []
                 if not choices:
-                    return LLMResult(text="", model=self.model, ok=False,
+                    return LLMResult(text="", model=model, ok=False,
                                      error=f"no choices in response: {str(data)[:200]}")
-                text = (choices[0].get("message") or {}).get("content", "") or ""
-                return LLMResult(text=_strip_reasoning(text), model=self.model)
+                text = _strip_reasoning((choices[0].get("message") or {}).get("content", "") or "")
+                if not text.strip():
+                    return LLMResult(text="", model=model, ok=False,
+                                     error="empty completion (model returned no content)")
+                return LLMResult(text=text, model=model)
             except urllib.error.HTTPError as exc:
                 last_err = f"HTTP {exc.code}"
                 if exc.code in (429, 503) and attempt < self.max_attempts - 1:
                     time.sleep(min(30.0, 2.0 * (2 ** attempt)))
                     continue
-                return LLMResult(text="", model=self.model, ok=False, error=last_err)
+                return LLMResult(text="", model=model, ok=False, error=last_err)
             except (urllib.error.URLError, OSError, ValueError) as exc:
                 last_err = f"{type(exc).__name__}: {exc}"
                 if attempt < self.max_attempts - 1:
                     time.sleep(min(30.0, 2.0 * (2 ** attempt)))
                     continue
-        return LLMResult(text="", model=self.model, ok=False, error=last_err)
+        return LLMResult(text="", model=model, ok=False, error=last_err)
 
     def reachable(self) -> LLMResult:
         """Cheap live probe used by ``bountymode models --check``.
 
-        A 200 response is not enough: some free routes (notably the
+        Probes *only* the configured model (``allow_fallback=False``) so the
+        check reports per-candidate health rather than silently succeeding on a
+        fallback.  A 200 response is not enough: some free routes (notably the
         ``openrouter/free`` auto-router) can land on a reasoning model that
         spends the whole token budget on hidden reasoning and returns
         ``content: null``.  That is a *failed* probe -- the model produced no
@@ -192,7 +229,14 @@ class ChatClient:
         if not self.configured:
             return LLMResult(text="", model=self.model, ok=False,
                              error="no API key configured")
-        result = self.chat("Reply with the single word: pong", max_tokens=64, temperature=0.0)
+        result = self.chat(
+            "Reply with the single word: pong",
+            max_tokens=64,
+            temperature=0.0,
+            allow_fallback=False,
+        )
+        # Belt-and-braces: even if a caller-supplied ``chat`` reports ok, an
+        # empty completion is a failed probe.
         if result.ok and not (result.text or "").strip():
             return LLMResult(
                 text="",
@@ -203,13 +247,42 @@ class ChatClient:
         return result
 
 
+#: Openers that reasoning models emit *without* `` thinking`` tags.  When a
+#: response begins with one of these, the leading reasoning paragraph is dropped
+#: so the caller sees the answer, not the model's scratchpad header.
+_REASONING_OPENERS = (
+    "here's a thinking process",
+    "here is a thinking process",
+    "here's my thinking",
+    "here is my thinking",
+    "thinking process:",
+    "let me think",
+)
+
+
 def _strip_reasoning(text: str) -> str:
-    """Drop `` thinking...</think>`` reasoning blocks some models emit."""
+    """Drop reasoning scratchpad some models emit.
+
+    Handles both the tagged form (`` thinking...</think>``) and the untagged
+    form, where a model opens with a reasoning preamble such as
+    ``Here's a thinking process:`` and only then gives the answer.  The
+    untagged form is stripped only when a further paragraph follows the
+    preamble, so a legitimate single-paragraph response is never emptied.
+    """
     out = text
     while " thinking" in out and "</think>" in out:
         start = out.index(" thinking")
         end = out.index("</think>") + len("</think>")
         out = out[:start] + out[end:]
+    out = out.strip()
+
+    lowered = out.lower()
+    for opener in _REASONING_OPENERS:
+        if lowered.startswith(opener):
+            parts = [p.strip() for p in out.split("\n\n") if p.strip()]
+            if len(parts) > 1:
+                out = "\n\n".join(parts[1:])
+            break
     return out.strip()
 
 
@@ -236,6 +309,7 @@ def client_from_config() -> ChatClient:
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         timeout=cfg.timeout,
+        fallbacks=list(cfg.fallbacks),
     )
 
 

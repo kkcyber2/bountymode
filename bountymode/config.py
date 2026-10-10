@@ -54,12 +54,20 @@ from typing import Any, Dict, List, Optional
 FREE_MODEL_DEFAULT = "nvidia/nemotron-3-super-120b-a12b:free"
 
 #: Explicit free models, in preference order.  Verified against the live
-#: OpenRouter model list (`/api/v1/models`, zero prompt+completion price).
+#: OpenRouter model list (`/api/v1/models`, zero prompt+completion price) and
+#: then *measured* against the live endpoint (3 probes each, 2026-10-10):
+#:
+#:   nvidia/nemotron-3-super-120b-a12b:free          3/3 ok, ~0.68s
+#:   nvidia/nemotron-3.5-lightning:free              3/3 ok, ~0.62s
+#:   nvidia/nemotron-3-nano-omni-30b-a3b-reasoning   1/3 ok, ~1.6s  (multimodal)
+#:
+#: Two models that were previously listed are *not* here because they failed
+#: every probe: ``liquid/lfm-2.5-2.6b:free`` returned empty content (0/3) and
+#: ``google/gemma-4-31b-it:free`` returned HTTP 429 (0/3).  Re-add them only
+#: after a fresh ``bountymode models --check`` shows them working.
 FREE_MODEL_FALLBACKS: List[str] = [
     "nvidia/nemotron-3-super-120b-a12b:free",              # 262K, strong reasoner
-    "liquid/lfm-2.5-2.6b:free",                            # 65K, tiny, reliable
     "nvidia/nemotron-3.5-lightning:free",                  # 1M context, fast
-    "google/gemma-4-31b-it:free",                          # 262K, image/video input
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",  # text/audio/image/video
 ]
 
