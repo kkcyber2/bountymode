@@ -180,11 +180,27 @@ class ChatClient:
         return LLMResult(text="", model=self.model, ok=False, error=last_err)
 
     def reachable(self) -> LLMResult:
-        """Cheap live probe used by ``bountymode models --check``."""
+        """Cheap live probe used by ``bountymode models --check``.
+
+        A 200 response is not enough: some free routes (notably the
+        ``openrouter/free`` auto-router) can land on a reasoning model that
+        spends the whole token budget on hidden reasoning and returns
+        ``content: null``.  That is a *failed* probe -- the model produced no
+        usable text -- so it must fall through to the next candidate rather
+        than be reported as working.
+        """
         if not self.configured:
             return LLMResult(text="", model=self.model, ok=False,
                              error="no API key configured")
-        return self.chat("Reply with the single word: pong", max_tokens=16, temperature=0.0)
+        result = self.chat("Reply with the single word: pong", max_tokens=64, temperature=0.0)
+        if result.ok and not (result.text or "").strip():
+            return LLMResult(
+                text="",
+                model=result.model,
+                ok=False,
+                error="empty completion (model returned no content)",
+            )
+        return result
 
 
 def _strip_reasoning(text: str) -> str:

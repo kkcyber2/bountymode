@@ -12,7 +12,7 @@ Only the standard library is used, so configuration never adds a dependency.
 Models
 ------
 The default provider is OpenRouter's *free* tier, because that is the cheapest
-way to run a red-team workload end to end and it needs no credit card.  The
+way to run a red-team workflow end to end and it needs no credit card.  The
 default model is ``openrouter/free`` -- OpenRouter's own auto-router, which
 selects among the currently available free models, so the configuration keeps
 working as the free roster rotates.  Named free models are used for the roles
@@ -45,18 +45,22 @@ from typing import Any, Dict, List, Optional
 # defaults                                                                     #
 # --------------------------------------------------------------------------- #
 
-#: OpenRouter's auto-router over its free tier -- stable default that survives
-#: free-roster churn.  See https://openrouter.ai/docs/guides/routing/routers/free-router
-FREE_MODEL_DEFAULT = "openrouter/free"
+#: Default free model.  ``openrouter/free`` (the auto-router) is deliberately
+#: *not* the default: it can route to a reasoning model that spends the whole
+#: token budget on hidden reasoning and returns ``content: null``, which is
+#: useless for payload generation and judging.  This named model was verified
+#: to return usable text on the free tier, so it is the default; the
+#: auto-router remains available as an explicit opt-in.
+FREE_MODEL_DEFAULT = "nvidia/nemotron-3-super-120b-a12b:free"
 
 #: Explicit free models, in preference order.  Verified against the live
 #: OpenRouter model list (`/api/v1/models`, zero prompt+completion price).
 FREE_MODEL_FALLBACKS: List[str] = [
     "nvidia/nemotron-3-super-120b-a12b:free",              # 262K, strong reasoner
+    "liquid/lfm-2.5-2.6b:free",                            # 65K, tiny, reliable
+    "nvidia/nemotron-3.5-lightning:free",                  # 1M context, fast
     "google/gemma-4-31b-it:free",                          # 262K, image/video input
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",  # text/audio/image/video
-    "nvidia/nemotron-3.5-lightning:free",                  # 1M context, fast
-    "liquid/lfm-2.5-2.6b:free",                            # 65K, tiny fallback
 ]
 
 #: Per-role free models.  Roles map onto how the engine and the upgrades use an
