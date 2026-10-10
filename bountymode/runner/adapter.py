@@ -128,6 +128,10 @@ class EngineResult:
     vulnerability_type: str = ""
     confidence: float = 0.0
     target_model: str = ""
+    #: True when the *dispatch* failed (engine missing, no matching technique,
+    #: or the technique raised).  A clean negative -- the test ran and found
+    #: nothing -- leaves this False, so it never trips the error breaker.
+    errored: bool = False
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], technique_id: str, target: str) -> "EngineResult":
@@ -376,6 +380,7 @@ class AgathonAdapter:
             # A failed dispatch is not a success — surface it as such.
             return EngineResult(
                 technique_id=technique.id, target=target, success=False,
+                errored=True,
                 evidence=f"engine dispatch failed: {exc}",
             )
         return EngineResult.from_dict(data, technique.id, target)
