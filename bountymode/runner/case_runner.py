@@ -179,7 +179,10 @@ class CaseRunner:
                     method="POST",
                 )
                 result.findings.append(finding)
-            else:
+            elif getattr(engine_result, "errored", False):
+                # Only a genuine dispatch failure counts toward the breaker; a
+                # clean negative (the test ran and found nothing) must not abort
+                # the run.
                 self.stops.record_error(None)
 
             if self._sleep_between:
