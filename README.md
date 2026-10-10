@@ -199,7 +199,7 @@ workload runs end to end at no cost.
 
 | Setting | Environment variable | Default |
 |---|---|---|
-| Model | `BOUNTYMODE_MODEL` | `openrouter/free` |
+| Model | `BOUNTYMODE_MODEL` | `nvidia/nemotron-3-super-120b-a12b:free` |
 | API key | `OPENROUTER_API_KEY` (or `BOUNTYMODE_LLM_API_KEY`) | *(unset — offline)* |
 | Base URL | `BOUNTYMODE_LLM_BASE_URL` | `https://openrouter.ai/api/v1` |
 | Engine tier | `BOUNTYMODE_ENGINE_INTENSITY` | `standard` |
@@ -207,10 +207,16 @@ workload runs end to end at no cost.
 | Engine path | `BOUNTYMODE_ENGINE_PATH` | `./engine` |
 | Offline | `BOUNTYMODE_OFFLINE=1` | *(off)* |
 
-**Default model: `openrouter/free`** — OpenRouter's free **auto-router**. It is
-the default because it selects among whichever free models are available at the
-time, so the configuration keeps working as the free roster rotates; a pinned
-free model would break the moment that model is retired.
+**Default model: `nvidia/nemotron-3-super-120b-a12b:free`** — a named free model
+that was verified to return usable text on the free tier.
+
+> **Why not `openrouter/free`?** The auto-router is *not* the default. It can
+> route to a reasoning model that spends the entire token budget on hidden
+> reasoning and returns `content: null` — a 200 response with no usable text.
+> That silently breaks payload generation and judging. It remains available as
+> an explicit opt-in (`BOUNTYMODE_MODEL=openrouter/free`), and `models --check`
+> now treats an empty completion as a **failed** probe so it falls through to
+> the next candidate instead of declaring a dead route healthy.
 
 Named free models are used for the roles where a specific capability matters,
 and all are in the fallback list (verified against OpenRouter's live model
@@ -223,9 +229,13 @@ list):
 | `multimodal` | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | text + image + audio + video input |
 
 **Fallbacks** (tried in order if the primary is unavailable):
-`nvidia/nemotron-3-super-120b-a12b:free` → `google/gemma-4-31b-it:free` →
-`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` →
-`nvidia/nemotron-3.5-lightning:free` → `liquid/lfm-2.5-2.6b:free`.
+`nvidia/nemotron-3-super-120b-a12b:free` → `liquid/lfm-2.5-2.6b:free` →
+`nvidia/nemotron-3.5-lightning:free` → `google/gemma-4-31b-it:free` →
+`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`.
+
+> Free-tier availability is shared and can be rate-limited upstream
+> (`HTTP 429` / `502 ResourceExhausted`). `models --check` reports the real
+> error per candidate and picks the first one that actually answers.
 
 Swap models without editing code:
 
@@ -294,7 +304,7 @@ stop-conditions.
    │  default)    │  HUMAN     └─────────┬─────────┘
    └──────────────┘                      │
                                          ▼
-   ┌──────────────────┐        ┌──────────────────┐
+   ┌─────────────────┐        ┌──────────────────┐
    │ Stop-Condition   │◄──────►│  Evidence Vault  │
    │ Engine (budgets, │        │  (redact → hash  │
    │  kill switch)    │        │   → chain)       │

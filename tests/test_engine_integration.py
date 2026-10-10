@@ -269,3 +269,42 @@ def test_base_url_follows_the_provider_that_issued_the_key():
     # An explicit model always wins over the provider default.
     cfg = load_config(env={"OPENAI_API_KEY": "sk-not-real", "BOUNTYMODE_MODEL": "gpt-4o"})
     assert cfg.llm.model == "gpt-4o"
+
+
+def test_reachable_treats_empty_content_as_failure(monkeypatch):
+    """A 200 with ``content: null`` is a failed probe, not a working model.
+
+    The ``openrouter/free`` auto-router can land on a reasoning model that
+    spends the whole token budget on hidden reasoning and returns no content.
+    ``reachable()`` must report that as not-ok so ``models --check`` falls
+    through to the next candidate instead of declaring a dead route healthy.
+    """
+    from bountymode.engine.llm import ChatClient, LLMResult
+
+    client = ChatClient(api_key="sk-or-not-real")
+    monkeypatch.setattr(
+        client, "chat",
+        lambda *a, **k: LLMResult(text="", model=client.model, ok=True),
+    )
+    probe = client.reachable()
+    assert probe.ok is False
+    assert "empty completion" in probe.error
+
+
+def test_reachable_passes_through_real_content(monkeypatch):
+    from bountymode.engine.llm import ChatClient, LLMResult
+
+    client = ChatClient(api_key="sk-or-not-real")
+    monkeypatch.setattr(
+        client, "chat",
+        lambda *a, **k: LLMResult(text="pong", model=client.model, ok=True),
+    )
+    probe = client.reachable()
+    assert probe.ok is True
+    assert probe.text == "pong"
+
+
+def test_default_model_is_a_named_free_model_not_the_auto_router():
+    # The auto-router is opt-in only: it can return empty content.
+    assert FREE_MODEL_DEFAULT != "openrouter/free"
+    assert FREE_MODEL_DEFAULT.endswith(":free")

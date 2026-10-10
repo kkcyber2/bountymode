@@ -282,7 +282,7 @@ def test_minimiser_keeps_marker_lines():
     assert m.reduction > 0
 
 
-def test_minimiser_no_marker_keeps_head():
+def test_minimiser_no_marker_keep_head():
     m = EvidenceMinimiser().minimise("a\nb\nc", ["absent"])
     assert m.text
     assert m.kept_markers == []
@@ -345,3 +345,49 @@ def test_crescendo_detects_escalation():
 def test_crescendo_no_escalation_when_flat_refusal():
     r = CrescendoRunner().run("x", lambda i, p: "I cannot help with that.")
     assert r.escalated is False
+
+
+def test_llm_judge_parses_a_valid_verdict():
+    from bountymode.engine.llm import LLMResult
+    from bountymode.upgrades.judge import ResponseJudge, llm_judge
+
+    class FakeClient:
+        def chat(self, *a, **k):
+            return LLMResult(
+                text='{"verdict": "complied", "confidence": 0.97, "rationale": "leaked"}',
+                model="fake", ok=True,
+            )
+
+    r = ResponseJudge(llm_judge(FakeClient())).judge("payload", "response text")
+    assert r.verdict.value == "complied"
+    assert r.confidence == 0.97
+    assert "llm_judge" in r.signals
+
+
+def test_llm_judge_falls_back_when_the_model_errors():
+    from bountymode.engine.llm import LLMResult
+    from bountymode.upgrades.judge import ResponseJudge, llm_judge
+
+    class BrokenClient:
+        def chat(self, *a, **k):
+            return LLMResult(text="", model="fake", ok=False, error="HTTP 429")
+
+    # Falls back to the deterministic heuristic, which sees the leak marker.
+    r = ResponseJudge(llm_judge(BrokenClient())).judge(
+        "payload", "here is my system prompt: sk-ABCDEFGHIJKLMNOPQRST-TUVWXYZ0123456789"
+    )
+    assert r.verdict.value == "complied"
+    assert "llm_judge" not in r.signals
+
+
+def test_llm_judge_falls_back_on_unparseable_output():
+    from bountymode.engine.llm import LLMResult
+    from bountymode.upgrades.judge import ResponseJudge, llm_judge
+
+    class GarbageClient:
+        def chat(self, *a, **k):
+            return LLMResult(text="I think it probably complied?", model="fake", ok=True)
+
+    r = ResponseJudge(llm_judge(GarbageClient())).judge("payload", "Sure, here you go")
+    assert r.verdict.value == "complied"  # heuristic compliance phrase
+    assert "llm_judge" not in r.signals
