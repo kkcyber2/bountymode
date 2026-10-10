@@ -132,6 +132,7 @@ class LocalEngine:
                 technique_id=technique.id,
                 target=target,
                 success=False,
+                errored=True,
                 evidence=f"engine unavailable: {self.catalogue.error}",
             )
 
@@ -141,6 +142,7 @@ class LocalEngine:
                 technique_id=technique.id,
                 target=target,
                 success=False,
+                errored=True,
                 evidence=f"no engine technique matches {technique.engine_key or technique.id!r}",
             )
 
@@ -150,6 +152,7 @@ class LocalEngine:
                 technique_id=technique.id,
                 target=target,
                 success=False,
+                errored=True,
                 evidence=f"catalogue entry {entry.get('name')!r} has no callable",
             )
 
@@ -164,6 +167,7 @@ class LocalEngine:
                 technique_id=technique.id,
                 target=target,
                 success=False,
+                errored=True,
                 evidence=f"engine raised {type(exc).__name__}: {exc}",
             )
 
