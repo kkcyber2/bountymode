@@ -45,6 +45,52 @@ def _strip_port_host(pattern: str) -> str:
     return p.strip().strip(".")
 
 
+def _split_host_port(pattern: str) -> Tuple[str, Optional[int]]:
+    """Split a bare ``host[:port]`` pattern into its host and optional port.
+
+    A pattern that pins a port must be honoured: an excluded
+    ``admin.example.com:8443`` has to keep excluding that target even though the
+    target carries a port, otherwise the exclusion is silently bypassed.
+    """
+    p = pattern.strip().lower()
+    if "://" in p:
+        parsed = urlparse(p)
+        return (parsed.hostname or "").strip("."), parsed.port
+    if "/" in p:
+        p = p.split("/", 1)[0]
+    if ":" in p:
+        host, _, port = p.partition(":")
+        try:
+            return host.strip("."), int(port)
+        except ValueError:
+            return host.strip("."), None
+    return p.strip("."), None
+
+
+def _target_host_port(target: str) -> Tuple[str, Optional[int]]:
+    """Return the host and explicit port of a target (``None`` when absent)."""
+    raw = (target or "").strip()
+    if not raw:
+        return "", None
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    return (parsed.hostname or "").lower().strip("."), parsed.port
+
+
+def _port_agrees(pattern_port: Optional[int], target: str) -> bool:
+    """Does a pattern's pinned port agree with the target's port?
+
+    A pattern with no port matches any port.  A pattern that pins a port
+    requires the target to be on that port; a target with no explicit port only
+    matches a pinned default port (80/443), which keeps the check conservative.
+    """
+    if pattern_port is None:
+        return True
+    _, target_port = _target_host_port(target)
+    if target_port is None:
+        return pattern_port in (80, 443)
+    return target_port == pattern_port
+
+
 def host_matches(pattern: str, host: str) -> bool:
     """Does a host pattern cover ``host``?
 
@@ -98,16 +144,21 @@ def target_matches_pattern(target: str, pattern: str) -> bool:
         if url:
             return url_matches(pat, url)
         pat_host = urlparse(pat).hostname or ""
-        return host_matches(pat_host, host)
+        return host_matches(pat_host, host) and _port_agrees(urlparse(pat).port, target)
 
     if "/" in pat:
         # host/path entry
         pat_host, _, _ = pat.partition("/")
         return host_matches(pat_host, host) and (not url or url.startswith(pat.lower()))
 
-    # Bare host or glob.
+    # Bare host, host:port or glob.
     if _HOST_RE.match(pat) or pat.startswith("*"):
         return host_matches(pat, host)
+
+    # A bare host:port pattern (e.g. an excluded "admin.example.com:8443").
+    pat_host, pat_port = _split_host_port(pat)
+    if pat_host and (pat_port is not None or _HOST_RE.match(pat_host)):
+        return host_matches(pat_host, host) and _port_agrees(pat_port, target)
 
     return False
 
