@@ -645,6 +645,124 @@ def pipe_run(pipeline: Any, args: argparse.Namespace, common: Dict[str, Any]) ->
     return pipeline.run_from_url(args.source, **common)
 
 
+def cmd_auto_run(args: argparse.Namespace) -> int:
+    """One input: a single document in, a submission bundle out.
+
+    This is the autonomous mode.  The operator supplies one file (a program's
+    PDF brief, a pasted policy, an exported HTML page) and an approver name, and
+    the runner reads it, plans the testing, runs it through the gate, verifies
+    what it finds, amplifies the impact and writes a submission bundle.
+    """
+    from .autonomous import AutonomousRunner
+
+    runner = AutonomousRunner(attempts=args.verify_attempts)
+    result = runner.run_from_document(
+        args.document,
+        approved_by=args.approve_by,
+        approval_note=args.note or "",
+        target=args.target or "",
+        domain=args.domain or "",
+        techniques=args.technique or None,
+        out_dir=args.output,
+        in_process=not args.live,
+        offline=not args.live,
+        live=args.live,
+        engine=args.engine or "",
+        token=args.token or "",
+        intensity=args.intensity or "standard",
+        program=args.program,
+        platform=args.platform,
+        verify_attempts=args.verify_attempts,
+        adapt=not args.no_adapt,
+    )
+
+    print(f"\nAutonomous run \u2014 {result.program or 'unknown program'}  [{result.mode}]")
+    print(f"Input: {args.document}")
+    print("\nStages")
+    for stage in result.stages:
+        print(f"  {'PASS' if stage.ok else 'FAIL'}  {stage.name:<10} {stage.detail}")
+
+    if result.plan:
+        plan = result.plan
+        print(f"\nPlan ({plan.get('source', 'heuristic')})")
+        print(f"  families : {', '.join(plan.get('families', [])) or DASH}")
+        if plan.get("rationale"):
+            print(f"  rationale: {plan['rationale']}")
+        for t in plan.get("targets", []):
+            print(f"  {t['priority']}. {t['target']}  [{t['kind']} -> {t['domain']}]  "
+                  f"{len(t['techniques'])} technique(s)")
+            if t.get("rationale"):
+                print(f"       {t['rationale'][:110]}")
+        if plan.get("chain_hypothesis"):
+            print(f"  chain    : {plan['chain_hypothesis']}")
+
+    if result.skipped:
+        print(f"\nSkipped by the authorization gate ({len(result.skipped)})")
+        for entry in result.skipped[:8]:
+            print(f"  - {entry['technique']}: {entry['reason'][:90]}")
+
+    if result.findings:
+        print(f"\nFindings ({len(result.findings)}) \u2014 {result.verified_count} verified, "
+              f"{result.ready_count} submission-ready")
+        for index, (finding, verdict) in enumerate(zip(result.findings, result.readiness)):
+            report = result.verified[index] if index < len(result.verified) else {}
+            vverdict = str(report.get("verdict", "")).upper() or "UNKNOWN"
+            flag = "READY" if verdict.get("ready") else "NOT READY"
+            print(f"  [{flag}] {finding.severity.value.upper():<12} "
+                  f"CVSS {finding.cvss_score:.1f}  {finding.title}")
+            print(f"             verification: {vverdict} "
+                  f"({report.get('successes', 0)}/{report.get('attempts', 0)} attempts, "
+                  f"oracle={report.get('oracle', 'n/a')})")
+            if not verdict.get("ready"):
+                gaps = list(verdict.get("blockers", [])) + list(verdict.get("missing", []))
+                print(f"             not submission-ready \u2014 {', '.join(gaps) or 'unspecified'}")
+
+    if result.amplifications:
+        lifted = [a for a in result.amplifications if a.get("amplified")]
+        if lifted:
+            print(f"\nImpact amplification ({len(lifted)})")
+            for amp in lifted[:6]:
+                print(f"  {amp['kind']}: {amp['from_severity']} -> {amp['to_severity']}")
+                print(f"    {amp['rationale'][:120]}")
+
+    if result.errors:
+        print("\nErrors")
+        for err in result.errors[:8]:
+            print(f"  ! {err}")
+
+    print(f"\nSubmission readiness: {'READY' if result.ready_to_submit else 'NOT READY'}")
+    if not result.ready_to_submit and result.missing:
+        print(f"  missing: {', '.join(result.missing)}")
+    print("Final confirmation of a vulnerability is the bounty program's job; "
+          "reports state reproducibility and evidence, not certainty.")
+    print(f"Reports and bundle: {result.out_dir}/reports/")
+    if not args.live:
+        print("This was a DRY RUN. No live target was contacted.")
+    return EXIT_OK if result.ok else EXIT_BLOCKED
+
+
+def cmd_auto_plan(args: argparse.Namespace) -> int:
+    """Show the plan the autonomous mode would produce, without running it."""
+    from .autonomous import DocumentIntake, Planner
+    from .program import ProgramImporter
+
+    read = DocumentIntake().read(args.document)
+    if not read.ok:
+        print(f"error: {read.error}", file=sys.stderr)
+        if read.hint:
+            print(read.hint, file=sys.stderr)
+        return EXIT_USAGE
+    imported = ProgramImporter().import_text(
+        read.text, program=args.program, platform=args.platform
+    )
+    if not imported.ok:
+        print("error: no scope could be parsed from the document", file=sys.stderr)
+        return EXIT_USAGE
+    plan = Planner().plan(imported.scope)
+    _print(plan.to_dict())
+    return EXIT_OK
+
+
 def cmd_program_watch(args: argparse.Namespace) -> int:
     """Re-run the pipeline on an interval and report what changed."""
     from .program import GuidedPipeline, ProgramWatcher
@@ -856,6 +974,44 @@ def build_parser() -> argparse.ArgumentParser:
     plr.add_argument("--no-browser", action="store_true")
     plr.add_argument("-o", "--output", default="bounty-run")
     plr.set_defaults(func=cmd_pipeline_run)
+
+    # -- autonomous (one input) --------------------------------------------- #
+    au = sub.add_parser(
+        "auto",
+        help="one-input autonomous mode: a single program document in, a submission bundle out",
+    )
+    ausub = au.add_subparsers(dest="auto_command", required=True)
+
+    ar = ausub.add_parser("run", help="read one document and run the whole job")
+    ar.add_argument("document", help="the program document (PDF, .txt, .md, .html or .json)")
+    ar.add_argument("--approve-by", required=True,
+                    help="name of the human authorizing this run (required)")
+    ar.add_argument("--note", default=None, help="a note recorded on the authorization receipt")
+    ar.add_argument("--target", default=None,
+                    help="override the planned target (defaults to the planner's first choice)")
+    ar.add_argument("--domain", default=None,
+                    help="override the domain adapter (defaults to the planner's choice)")
+    ar.add_argument("--technique", action="append", default=None,
+                    help="override the planned techniques (repeatable)")
+    ar.add_argument("--verify-attempts", type=int, default=5)
+    ar.add_argument("--program", default=None)
+    ar.add_argument("--platform", default=None)
+    ar.add_argument("--intensity", default=None,
+                    choices=["recon", "standard", "aggressive", "greasy"])
+    ar.add_argument("--no-adapt", action="store_true",
+                    help="skip the adaptive follow-up pass after a finding lands")
+    ar.add_argument("--live", action="store_true",
+                    help="dispatch to a remote engine (requires --engine, never on by default)")
+    ar.add_argument("--engine", default=None)
+    ar.add_argument("--token", default=None)
+    ar.add_argument("-o", "--output", default="auto-run")
+    ar.set_defaults(func=cmd_auto_run)
+
+    ap = ausub.add_parser("plan", help="show the plan for a document without running it")
+    ap.add_argument("document")
+    ap.add_argument("--program", default=None)
+    ap.add_argument("--platform", default=None)
+    ap.set_defaults(func=cmd_auto_plan)
 
     return p
 

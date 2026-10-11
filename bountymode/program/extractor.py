@@ -38,8 +38,15 @@ _URL_RE = re.compile(r"https?://[^\s)|\"'`,;\]]+", re.I)
 _WILDCARD_RE = re.compile(r"\*\.(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b", re.I)
 _HOST_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b", re.I)
 
-_IN_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?in[\s-]?scope\s*targets?\b.*$", re.I | re.M)
-_OUT_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?out[\s-]?(?:of[\s-]?)?scope\b.*$", re.I | re.M)
+_IN_HEAD = re.compile(
+    r"^\s*(?:#{1,6}\s*)?in[\s-]?scope(?:\s*(?:targets?|assets?|hosts?|domains?))?\b.*$",
+    re.I | re.M,
+)
+_OUT_HEAD = re.compile(
+    r"^\s*(?:#{1,6}\s*)?out[\s-]?(?:of[\s-]?)?scope"
+    r"(?:\s*(?:targets?|assets?|hosts?|domains?|items?))?\b.*$",
+    re.I | re.M,
+)
 _ANY_HEAD = re.compile(r"^\s*#{1,6}\s+.*$", re.M)
 
 _REWARD_LINE = re.compile(r"^\s*P([1-5])\s*\|\s*\$?([\d,]+)\s*$", re.I | re.M)
@@ -200,11 +207,13 @@ class ProgramExtractor:
         out_block = _slice_section(text, _OUT_HEAD, _IN_HEAD)
 
         in_rows = _table_rows(in_block)
+        kind_col = _kind_column(in_rows)
         listings: List[Dict[str, str]] = []
         in_scope: List[ScopeTarget] = []
         seen: set = set()
 
         for row in in_rows:
+            declared = row[kind_col] if 0 <= kind_col < len(row) else ""
             for target in _targets_from_row(row):
                 key = target.lower()
                 if key in seen:
@@ -216,7 +225,7 @@ class ProgramExtractor:
                                      "note": "marketplace/listing page \u2014 the testable "
                                              "asset is the app backend, not this host"})
                     continue
-                in_scope.append(ScopeTarget(pattern=target, kind=_kind_of(target)))
+                in_scope.append(ScopeTarget(pattern=target, kind=_kind_of(target, declared)))
 
         # Prose wildcards only — never bare hosts from prose.
         if not in_scope:
@@ -308,6 +317,8 @@ class ProgramExtractor:
         if not out:
             for key, amount in _REWARD_INLINE.findall(text):
                 out.setdefault(f"P{key}", int(amount.replace(",", "")))
+        if not out:
+            out = _severity_rewards(text)
         return dict(sorted(out.items()))
 
     def _prohibited(self, text: str) -> List[str]:
@@ -380,7 +391,7 @@ class ProgramExtractor:
                 verify.append(
                     "Every in-scope entry on this page is a marketplace listing. The "
                     "program's own scope text usually says the testable asset is the "
-                    "backend the app calls \u2014 find that host, add it here, and confirm "
+                    "backend the app calls — find that host, add it here, and confirm "
                     "it before running anything."
                 )
         if scope.out_of_scope:
@@ -501,15 +512,66 @@ def _is_listing(host: str) -> bool:
     return any(host == lh or host.endswith("." + lh) for lh in LISTING_HOSTS)
 
 
-def _kind_of(target: str) -> str:
+def _kind_of(target: str, declared: str = "") -> str:
+    """Classify an asset, preferring the program's own declared kind.
+
+    A scope table usually has a column saying what the row *is* ("api", "web",
+    "mobile", "llm").  That is the program's own statement and outranks any
+    guess from the hostname, so it is honoured first.
+    """
+    declared = (declared or "").strip().lower()
+    if declared:
+        for kind in ("llm", "api", "mobile", "web", "cloud", "repo"):
+            if kind in declared:
+                return kind
+        if "android" in declared or "ios" in declared or "app" in declared:
+            return "mobile"
     t = (target or "").lower()
     if t.endswith(".apk") or "android" in t:
         return "mobile"
     if t.endswith(".ipa") or "ios" in t:
         return "mobile"
-    if "/api" in t:
+    if "/api" in t or t.startswith("api.") or "graphql" in t:
         return "api"
+    if any(s in t for s in ("llm", "chat", "assistant", "copilot", "ai.")):
+        return "llm"
     return "web"
+
+
+#: A scope-table header cell that names the asset-kind column.
+_KIND_HEADER_RE = re.compile(r"\b(kind|type|asset\s*type|category|platform)\b", re.I)
+
+
+def _kind_column(rows: List[List[str]]) -> int:
+    """Find the index of the asset-kind column in a scope table, if any."""
+    for row in rows[:2]:
+        for index, cell in enumerate(row):
+            if _KIND_HEADER_RE.search(cell or ""):
+                return index
+    return -1
+
+
+#: A reward table keyed by severity name rather than by P1..P5.  The amount may
+#: be written with or without a currency symbol, and may sit in a table cell.
+_SEVERITY_REWARD_RE = re.compile(
+    r"\b(critical|high|medium|low|informational)\b[^\n\d$]{0,40}?\$?\s?([\d][\d,]{1,})\b",
+    re.I,
+)
+
+#: Severity name -> the P-level the rest of the system uses.
+_SEVERITY_TO_P = {
+    "critical": "P1", "high": "P2", "medium": "P3", "low": "P4", "informational": "P5",
+}
+
+
+def _severity_rewards(text: str) -> Dict[str, int]:
+    """Parse a reward table keyed by severity name (Critical/High/...)."""
+    out: Dict[str, int] = {}
+    for name, amount in _SEVERITY_REWARD_RE.findall(text or ""):
+        level = _SEVERITY_TO_P.get(name.lower())
+        if level and level not in out:
+            out[level] = int(amount.replace(",", ""))
+    return out
 
 
 def _dedup_rules(rules: List[OutOfScopeRule]) -> List[OutOfScopeRule]:

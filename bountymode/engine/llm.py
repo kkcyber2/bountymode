@@ -76,6 +76,11 @@ class ChatClient:
     #: Ordered fallback models.  When the primary model errors or returns no
     #: usable text, ``chat`` walks this list instead of retrying a dead route.
     fallbacks: List[str] = field(default_factory=list)
+    #: Optional response cache.  ``None`` (the default) disables caching, so a
+    #: caller that does not ask for it sees no behaviour change.  Pass a
+    #: :class:`~bountymode.engine.cache.ResponseCache` to make repeated identical
+    #: calls free -- which is what a verification replay and a re-run both are.
+    cache: Optional[Any] = None
 
     def __post_init__(self) -> None:
         self.base_url = (self.base_url or DEFAULT_BASE_URL).rstrip("/")
@@ -151,11 +156,63 @@ class ChatClient:
 
         last = LLMResult(text="", model=primary, ok=False, error="no attempt made")
         for candidate in candidates:
+            cached = self._cache_lookup(candidate, messages, temperature, max_tokens, json_mode)
+            if cached is not None:
+                return cached
             result = self._chat_once(candidate, messages, temperature, max_tokens, json_mode)
             if result.ok and (result.text or "").strip():
+                self._cache_store(candidate, messages, temperature, max_tokens, json_mode, result)
                 return result
             last = result
         return last
+
+    def _cache_lookup(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        json_mode: bool,
+    ) -> Optional[LLMResult]:
+        """Return a cached completion for this exact request, if one exists."""
+        if self.cache is None:
+            return None
+        from .cache import cache_key
+
+        key = cache_key(
+            model=model,
+            messages=messages,
+            temperature=self.temperature if temperature is None else temperature,
+            max_tokens=self.max_tokens if max_tokens is None else max_tokens,
+            json_mode=json_mode,
+        )
+        entry = self.cache.get(key)
+        if entry is None:
+            return None
+        return LLMResult(text=entry.text, model=entry.model or model)
+
+    def _cache_store(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        json_mode: bool,
+        result: LLMResult,
+    ) -> None:
+        """Store a successful completion so an identical call is free."""
+        if self.cache is None or not result.ok or not (result.text or "").strip():
+            return
+        from .cache import cache_key
+
+        key = cache_key(
+            model=model,
+            messages=messages,
+            temperature=self.temperature if temperature is None else temperature,
+            max_tokens=self.max_tokens if max_tokens is None else max_tokens,
+            json_mode=json_mode,
+        )
+        self.cache.put(key, result.text, result.model or model)
 
     def _chat_once(
         self,
