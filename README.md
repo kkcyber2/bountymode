@@ -31,6 +31,8 @@ fail-closed attack tiers and the sandbox runner.
 - [Quickstart](#quickstart)
 - [The engine (vendored, in-process)](#the-engine-vendored-in-process)
 - [Models & providers](#models--providers)
+- [Program onboarding & the guided pipeline](#program-onboarding--the-guided-pipeline)
+- [One-input autonomous mode](#one-input-autonomous-mode)
 - [The web UI](#the-web-ui)
 - [Architecture](#architecture)
 - [Domains](#domains)
@@ -360,6 +362,89 @@ than going unnoticed.
 
 ---
 
+## One-input autonomous mode
+
+Hand the system **one document** — a program's PDF brief, a pasted policy, an
+exported HTML page — and it does the rest.
+
+```bash
+bountymode auto run program-brief.pdf --approve-by "your name"
+#   or paste the details instead of pointing at a file:
+bountymode auto run --help
+```
+
+The run chains ten stages, and every one of them is the same code the CLI and
+UI already use, so the safety properties are inherited rather than
+re-implemented:
+
+```
+intake -> import -> scope -> plan -> gate -> scan -> verify -> amplify -> readiness -> report
+```
+
+| Stage | What happens |
+|---|---|
+| **intake** | Reads the document. PDF (text layer via pypdf / `pdftotext`), `.txt`, `.md`, `.html`, `.json`. A scanned PDF with no text layer is reported honestly, with the exact fix (run OCR, or paste the text). |
+| **import** | Extracts in-scope assets, exclusions, policy prohibitions, the reward table and rate limits. Never invents scope: only scope-table rows become targets, marketplace listings are recorded and excluded, and anything ambiguous lands in a `VERIFY` list. |
+| **scope** | Writes `scope.json` + an authorization receipt bound to a **scope digest**, so editing the scope invalidates the approval. A human approver is required. |
+| **plan** | The agentic planner classifies each asset (LLM / API / web / mobile / repo / cloud), scores it, and selects technique families — with a written rationale and a chain hypothesis. |
+| **gate** | Deny-by-default authorization for every technique. Exclusions always win; destructive techniques are never planned. |
+| **scan** | Runs the authorized techniques in-process (dry run by default). |
+| **verify** | Replays each finding N-of-M with a class-appropriate oracle, a control and a **negative control**, and returns verified / unverified / inconclusive. |
+| **amplify** | Pursues the chain that raises severity: data-exposure classification, privilege-escalation proof, and multi-step chains. Sets a severity *floor* so the label and the CVSS score cannot disagree. |
+| **readiness** | Per finding: reproducible? in-scope? evidence attached? CVSS justified? impact stated? Names exactly what is missing. |
+| **report** | HackerOne/Bugcrowd-shaped report per finding plus a top-level `submission-bundle.json` with a ready / not-ready verdict. |
+
+### Worked example
+
+```bash
+python tools/auto_example.py
+```
+
+writes `examples/acme-ai-program.pdf`, runs the whole job over that single file,
+and prints the result. Real output:
+
+```
+  PASS  intake     read pdf via pypdf (1032 chars, 1 pages)
+  PASS  import     3 in-scope, 4 exclusions, 4 to verify
+  PASS  scope      scope digest 1847a8918f68 approved by example-operator
+  PASS  plan       3 target(s), families: access_control, injection, data_exposure, logic, client_side
+  PASS  gate       12 of 12 planned techniques authorized for chat.acme-ai.example
+  PASS  scan       12 request(s), 3 finding(s) [in-process-dry-run]
+  PASS  verify     3 of 3 finding(s) verified (5 attempt(s) each)
+  PASS  amplify    1 amplification(s) applied across 3 finding(s)
+  PASS  readiness  3 of 3 finding(s) are submission-ready
+  PASS  report     3 report file(s) + submission bundle (submission-bundle.json)
+
+findings: 3  verified: 3  submission-ready: 3
+  [READY] critical     CVSS 9.1  Prompt Injection on chat.acme-ai.example
+  [READY] critical     CVSS 9.1  Rag Poisoning on chat.acme-ai.example
+  [READY] critical     CVSS 9.1  Invisible Command Injection on chat.acme-ai.example
+```
+
+### In the web UI
+
+The **One input (autonomous)** tab is the same flow, point-and-click: drop in a
+file (or paste the details) → **Read & plan** (no testing) → review the parsed
+scope, the exclusions and the `VERIFY` list → tick the authorization box → **Run
+the whole job**. The result shows the stages, the findings with their
+verification verdicts, the amplifications, and what is missing when a finding is
+not submission-ready.
+
+### Honest limits
+
+- **A dry run's verdict is simulated.** With no live target, verification runs
+  against the in-process simulated target, which is vulnerable to everything, so
+  it reports VERIFIED 5/5. The CLI prints `This was a DRY RUN` to mark it. Only a
+  live run's verdict is a real measurement.
+- **"verified" means reproducible and evidenced — not confirmed.** Final
+  confirmation is the bounty program's call, and the output says so.
+- **The planner tests the primary asset.** A plan may span several assets; the
+  runner tests the highest-priority one and records the rest, so a run stays
+  bounded and auditable.
+- **Nothing is ever submitted.** The bundle is written to disk; a human submits.
+
+---
+
 ## The web UI
 
 A local, single-operator UI over the *same* library code the CLI uses — every
@@ -556,6 +641,11 @@ bountymode program confirm <scope.json> --approve-by NAME          authorize an 
 bountymode program watch <url>|--file F --interval S [--runs N]     re-scan and diff on an interval
 bountymode pipeline run <url>|--file F --approve-by NAME [--domain D] [--live --engine URL] [-o DIR]
                               one command: import -> scope -> gate -> scan -> verify -> report
+bountymode auto run <document> --approve-by NAME [--target T] [--no-adapt] [--live --engine URL] [-o DIR]
+                              ONE INPUT: a program document (PDF/text/HTML/JSON) in,
+                              a submission bundle out -- intake -> import -> scope -> plan ->
+                              gate -> scan -> verify -> amplify -> readiness -> report
+bountymode auto plan <document>                              show the plan without running it
 bountymode models [--check]                                  show / probe the model config
 bountymode engine [--families] [--techniques]                inspect the vendored engine
 ```
@@ -620,9 +710,9 @@ dispatch, configuration).
 
 Two of those suites exist because a full pipeline run surfaced real defects that
 the unit tests had not: `tests/test_engine_dispatch.py` now asserts that *every*
-registered engine technique is callable \u2014 a tester whose second parameter is an
+registered engine technique is callable — a tester whose second parameter is an
 attack payload rather than an intensity level was being called with the wrong
-argument and raising `TypeError` \u2014 and the pipeline suite asserts that an
+argument and raising `TypeError` — and the pipeline suite asserts that an
 unimplemented technique is *skipped* rather than counted as an error, since the
 error breaker would otherwise abort the scan after three of them.
 

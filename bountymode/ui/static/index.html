@@ -77,7 +77,8 @@
 <div class="wrap">
   <nav id="nav">
     <div class="grp">Guided</div>
-    <button data-t="guided" class="active">✦ Guided run</button>
+    <button data-t="auto" class="active">&#9889; One input (autonomous)</button>
+    <button data-t="guided">&#10022; Guided run</button>
     <div class="grp">Workflow</div>
     <button data-t="scope">1 · Import scope</button>
     <button data-t="check">2 · Check authorization</button>
@@ -102,7 +103,52 @@
   </nav>
   <main>
 
-  <section id="guided" class="active">
+  <section id="auto" class="active">
+    <h2>One input &#8212; a program document in, a submission bundle out</h2>
+    <div class="sub">
+      Drop in <b>one</b> file of program details (a PDF brief, a pasted policy, an
+      exported HTML page) and the system does the rest: it reads the document,
+      extracts the scope, plans the testing like a hunter would, runs it through
+      the authorization gate, verifies what it finds, amplifies the impact and
+      writes a report that is ready to submit. Nothing is tested until you press
+      <b>Run</b>, and it is a dry run unless you tick <i>live</i>.
+    </div>
+
+    <div class="card">
+      <label>Step 1 &#183; Program document (PDF, .txt, .md, .html or .json)</label>
+      <input id="a-file" type="file" accept=".pdf,.txt,.md,.markdown,.html,.htm,.json">
+      <div class="note">A scanned PDF with no text layer cannot be read &#8212; the tool will say so and ask you to paste the text instead.</div>
+      <label>Step 1b &#183; &#8230;or paste the program details</label>
+      <textarea id="a-text" rows="8" placeholder="# Acme AI Bug Bounty&#10;## In Scope&#10;| Target | Kind |&#10;|---|---|&#10;| api.acme.example | api |&#10;## Out of Scope&#10;- status.acme.example"></textarea>
+      <div class="row">
+        <div><label>Program name (optional)</label><input id="a-program" placeholder="acme-ai"></div>
+        <div><label>Platform</label><input id="a-platform" placeholder="bugcrowd"></div>
+      </div>
+      <button class="act" onclick="doAutoPlan()">Step 2 &#183; Read &amp; plan (no testing)</button>
+      <div id="a-plan"></div>
+    </div>
+
+    <div class="card" id="a-run-card" style="display:none">
+      <h3>Step 3 &#183; Confirm and run the whole job</h3>
+      <div class="note warn">By confirming you state that you are authorized to test the assets listed above, and that you have read the program's rules. This tool never submits anything &#8212; you do.</div>
+      <div class="row">
+        <div><label>Your name (authorization)</label><input id="a-approver" placeholder="your name"></div>
+        <div><label>Target override (optional)</label><input id="a-target" placeholder="leave blank to use the planner's first choice"></div>
+      </div>
+      <div class="row">
+        <div><label>Verify attempts (N-of-M)</label><input id="a-attempts" type="number" value="5"></div>
+        <div><label>Output directory</label><input id="a-out" value="auto-run"></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="a-adapt" checked> Pursue the amplification chain when a finding lands (adaptive follow-up)</label>
+      <label class="chk"><input type="checkbox" id="a-confirm"> I have reviewed the parsed scope, the exclusions and the <b>VERIFY</b> list</label>
+      <label class="chk"><input type="checkbox" id="a-live"> Live run (requires an engine URL; leave off for a dry run)</label>
+      <input id="a-engine" placeholder="engine URL (only for a live run)">
+      <button class="act" onclick="doAutoRun()">Step 4 &#183; Run the whole job</button>
+      <div id="a-result"></div>
+    </div>
+  </section>
+
+  <section id="guided">
     <h2>Guided run — URL to submission-ready report</h2>
     <div class="sub">
       Paste a program page URL (e.g. a Bugcrowd engagement) or copy the scope
@@ -686,6 +732,112 @@ async function doOnboard(){
   }catch(e){ $('g-review').innerHTML = '<div class="note err">'+esc(e.message)+'</div>'; }
 }
 
+async function readAutoDoc(){
+  // Prefer the dropped file; fall back to the pasted text.
+  const f = $('a-file').files && $('a-file').files[0];
+  if(f){
+    const text = await f.text();
+    return {text: text, name: f.name};
+  }
+  return {text: $('a-text').value, name: ''};
+}
+
+async function doAutoPlan(){
+  const doc = await readAutoDoc();
+  if(!doc.text.trim()){ $('a-plan').innerHTML='<div class="note err">Choose a file or paste the program details first.</div>'; return; }
+  $('a-plan').innerHTML = '<div class="note">Reading the document and planning\u2026</div>';
+  try{
+    const d = await api('/api/auto/plan', {
+      text: doc.text,
+      program: $('a-program').value.trim() || null,
+      platform: $('a-platform').value.trim() || null
+    }, 'POST');
+    const p = d.plan || {};
+    const targets = (p.targets||[]).map(t=>`<tr><td>${t.priority}</td><td><code>${esc(t.target)}</code></td>`
+      + `<td>${esc(t.kind)}</td><td>${esc(t.domain)}</td><td>${(t.techniques||[]).length}</td>`
+      + `<td>${esc((t.rationale||'').slice(0,140))}</td></tr>`).join('');
+    $('a-plan').innerHTML = `
+      <div class="kv">
+        <span>program: <b>${esc(d.program||'')}</b></span>
+        <span>platform: ${esc(d.platform||'')}</span>
+        <span>in-scope: ${(d.in_scope||[]).length}</span>
+        <span>exclusions: ${(d.out_of_scope||[]).length}</span>
+        <span>to verify: ${(d.verify||[]).length}</span>
+      </div>
+      <h3>In scope</h3><ul class="lst">${(d.in_scope||[]).map(x=>`<li><code>${esc(x)}</code></li>`).join('')||'<li>none</li>'}</ul>
+      <h3>Out of scope (exclusions always win)</h3><ul class="lst">${(d.out_of_scope||[]).map(x=>`<li><code>${esc(x)}</code></li>`).join('')||'<li>none</li>'}</ul>
+      ${(d.verify||[]).length?`<h3>VERIFY \u2014 confirm these before testing</h3><ul class="lst warn">${d.verify.map(v=>`<li>${esc(v)}</li>`).join('')}</ul>`:''}
+      <h3>Plan (${esc(p.source||'heuristic')})</h3>
+      <div class="note">${esc(p.rationale||'')}</div>
+      <table><tr><th>#</th><th>Target</th><th>Kind</th><th>Domain</th><th>Techniques</th><th>Why</th></tr>${targets}</table>
+      ${p.chain_hypothesis?`<div class="note"><b>Chain hypothesis:</b> ${esc(p.chain_hypothesis)}</div>`:''}
+    `;
+    $('a-run-card').style.display='block';
+  }catch(e){ $('a-plan').innerHTML = '<div class="note err">'+esc(e.message)+'</div>'; }
+}
+
+async function doAutoRun(){
+  const doc = await readAutoDoc();
+  if(!doc.text.trim()){ $('a-result').innerHTML='<div class="note err">Choose a file or paste the program details first.</div>'; return; }
+  if(!$('a-confirm').checked){ $('a-result').innerHTML='<div class="note err">Tick the confirmation box to confirm you are authorized to test these assets.</div>'; return; }
+  const approver = $('a-approver').value.trim();
+  if(!approver){ $('a-result').innerHTML='<div class="note err">Enter your name \u2014 a run must record who authorized it.</div>'; return; }
+  const live = $('a-live').checked;
+  const engine = $('a-engine').value.trim();
+  if(live && !engine){ $('a-result').innerHTML='<div class="note err">A live run needs an engine URL.</div>'; return; }
+
+  $('a-result').innerHTML = '<div class="note">Running the whole job: intake \u2192 import \u2192 plan \u2192 gate \u2192 scan \u2192 verify \u2192 amplify \u2192 readiness \u2192 report\u2026</div>';
+  try{
+    const d = await api('/api/auto/run', {
+      text: doc.text,
+      approved_by: approver,
+      target: $('a-target').value.trim(),
+      verify_attempts: parseInt($('a-attempts').value) || 5,
+      out_dir: $('a-out').value.trim() || 'auto-run',
+      adapt: $('a-adapt').checked,
+      program: $('a-program').value.trim() || null,
+      platform: $('a-platform').value.trim() || null,
+      live: live,
+      engine: engine || null
+    }, 'POST');
+
+    const stages = (d.stages||[]).map(s=>`<tr><td>${esc(s.stage)}</td><td>${s.ok?'<span class="pill p-allow">pass</span>':'<span class="pill p-deny">fail</span>'}</td><td>${esc(s.detail)}</td></tr>`).join('');
+    let findings = '';
+    (d.findings||[]).forEach((f,i)=>{
+      const r = (d.readiness||[])[i] || {};
+      const v = (d.verified||[])[i] || {};
+      findings += `<tr><td>${r.ready?'<span class="pill p-allow">READY</span>':'<span class="pill p-deny">NOT READY</span>'}</td>`
+        + `<td>${esc(f.severity)}</td><td>${f.cvss_score}</td><td>${esc(f.title)}</td>`
+        + `<td>${esc(v.verdict||'')} ${v.successes||0}/${v.attempts||0}</td>`
+        + `<td>${(r.missing||[]).concat(r.blockers||[]).map(esc).join(', ')||'\u2014'}</td></tr>`;
+    });
+    const amps = (d.amplifications||[]).filter(a=>a.amplified)
+      .map(a=>`<li><b>${esc(a.kind)}</b>: ${esc(a.from_severity)} \u2192 ${esc(a.to_severity)} \u2014 ${esc(a.rationale)}</li>`).join('');
+    const skipped = (d.skipped||[]).slice(0,12).map(s=>`<li><code>${esc(s.technique)}</code> \u2014 ${esc((s.reason||'').slice(0,120))}</li>`).join('');
+
+    $('a-result').innerHTML = `
+      <div class="kv">
+        <span>mode: <b>${esc(d.mode)}</b></span>
+        <span>requests: ${d.requests_made}</span>
+        <span>findings: ${d.finding_count}</span>
+        <span>verified: ${d.verified_count}</span>
+        <span>submission-ready: <b class="${d.ready_to_submit?'ok':'err'}">${d.ready_count}/${d.finding_count}</b></span>
+        <span>out: <code>${esc(d.out_dir||'')}</code></span>
+      </div>
+      <h3>Stages</h3>
+      <table><tr><th>Stage</th><th>&nbsp;</th><th>Detail</th></tr>${stages}</table>
+      ${findings ? `<h3>Findings</h3><table><tr><th>Ready</th><th>Severity</th><th>CVSS</th><th>Title</th><th>Verification</th><th>Missing</th></tr>${findings}</table>` : '<div class="note">No findings in this run.</div>'}
+      ${amps ? `<h3>Impact amplification</h3><ul class="lst">${amps}</ul>` : ''}
+      ${skipped ? `<h3>Skipped by the authorization gate</h3><ul class="lst">${skipped}</ul>` : ''}
+      ${(d.missing||[]).length ? `<h3>Not submission-ready \u2014 missing</h3><ul class="lst warn">${d.missing.map(m=>`<li>${esc(m)}</li>`).join('')}</ul>` : ''}
+      ${(d.errors||[]).length ? `<h3>Errors</h3><ul class="lst warn">${d.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul>` : ''}
+      <div class="note">Final confirmation of a vulnerability is the bounty program's job \u2014 this bundle states reproducibility and evidence, not certainty. Nothing was submitted anywhere.</div>
+      <div class="note">${d.mode==='in-process-dry-run' ? 'This was a DRY RUN \u2014 no live target was contacted.' : 'Reports and evidence were written under the output directory above.'}</div>
+      <button class="act ghost" onclick="loadFindings()">View findings</button>
+    `;
+  }catch(e){ $('a-result').innerHTML = '<div class="note err">'+esc(e.message)+'</div>'; }
+}
+
 async function doGuidedRun(){
   if(!ONBOARD){ $('g-result').innerHTML='<div class="note err">Parse a scope first.</div>'; return; }
   if(!$('g-confirm').checked){ $('g-result').innerHTML='<div class="note err">Tick the confirmation box to confirm you are authorized to test these assets.</div>'; return; }
@@ -734,7 +886,7 @@ async function doGuidedRun(){
       ${findings ? `<h3>Findings</h3><table><tr><th>Ready</th><th>Severity</th><th>CVSS</th><th>Title</th><th>Missing</th></tr>${findings}</table>` : '<div class="note">No findings in this run.</div>'}
       ${skipped ? `<h3>Skipped by the authorization gate</h3><ul class="lst">${skipped}</ul>` : ''}
       ${(d.errors||[]).length ? `<h3>Errors</h3><ul class="lst warn">${d.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul>` : ''}
-      <div class="note">${d.mode==='in-process-dry-run' ? 'This was a DRY RUN — no live target was contacted.' : 'Reports and evidence were written under the output directory above.'}</div>
+      <div class="note">${d.mode==='in-process-dry-run' ? 'This was a DRY RUN \u2014 no live target was contacted.' : 'Reports and evidence were written under the output directory above.'}</div>
       <button class="act ghost" onclick="loadFindings()">View findings</button>
     `;
   }catch(e){ $('g-result').innerHTML = '<div class="note err">'+esc(e.message)+'</div>'; }

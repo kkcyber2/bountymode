@@ -202,6 +202,40 @@ class VerifyRequest(BaseModel):
     vulnerable: bool = True
 
 
+class AutoRunRequest(BaseModel):
+    """One-input autonomous mode: a single document in, a submission bundle out.
+
+    ``text`` carries the program document inline (the paste path); ``path``
+    points at a file already on disk.  Exactly one of them is required.
+    """
+
+    text: str = ""
+    path: str = ""
+    approved_by: str = ""
+    note: str = ""
+    target: str = ""
+    domain: str = ""
+    techniques: Optional[List[str]] = None
+    verify_attempts: int = 5
+    program: Optional[str] = None
+    platform: Optional[str] = None
+    intensity: str = "standard"
+    adapt: bool = True
+    live: bool = False
+    engine: Optional[str] = None
+    token: Optional[str] = None
+    out_dir: str = "auto-run"
+
+
+class AutoPlanRequest(BaseModel):
+    """Show the plan for a document without running anything."""
+
+    text: str = ""
+    path: str = ""
+    program: Optional[str] = None
+    platform: Optional[str] = None
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Bounty Mode",
@@ -671,6 +705,85 @@ def create_app() -> FastAPI:
             "requests_sent": report.requests_sent,
             "requests_reused": report.requests_reused,
         }
+
+    # -- autonomous (one input) -------------------------------------------- #
+
+    @app.post("/api/auto/plan")
+    def auto_plan(req: AutoPlanRequest) -> Dict[str, Any]:
+        """Show the plan the autonomous mode would produce, without running it."""
+        from ..autonomous import DocumentIntake, Planner
+        from ..program import ProgramImporter
+
+        if req.path:
+            read = DocumentIntake().read(req.path)
+            if not read.ok:
+                raise HTTPException(status_code=400, detail=read.error)
+            text = read.text
+        elif req.text.strip():
+            text = req.text
+        else:
+            raise HTTPException(status_code=400, detail="supply either text or path")
+
+        imported = ProgramImporter().import_text(
+            text, program=req.program, platform=req.platform
+        )
+        if not imported.ok:
+            raise HTTPException(
+                status_code=400,
+                detail="no scope could be parsed from the document",
+            )
+        plan = Planner().plan(imported.scope)
+        return {
+            "program": imported.scope.program,
+            "platform": imported.scope.platform,
+            "in_scope": [t.pattern for t in imported.scope.in_scope],
+            "out_of_scope": [t.pattern for t in imported.scope.out_of_scope],
+            "verify": list(imported.scope.verify_markers),
+            "plan": plan.to_dict(),
+        }
+
+    @app.post("/api/auto/run")
+    def auto_run(req: AutoRunRequest) -> Dict[str, Any]:
+        """One document in, a submission bundle out.
+
+        The whole job runs here: intake -> import -> scope -> plan -> gate ->
+        scan -> verify -> amplify -> readiness -> report.  A human approver is
+        required, and the default is a dry run.
+        """
+        from ..autonomous import AutonomousRunner
+
+        if not req.approved_by.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="approved_by is required: a human must confirm the scope",
+            )
+        if not (req.path or req.text.strip()):
+            raise HTTPException(status_code=400, detail="supply either text or path")
+
+        runner = AutonomousRunner(attempts=req.verify_attempts)
+        common = dict(
+            approved_by=req.approved_by,
+            approval_note=req.note,
+            target=req.target,
+            domain=req.domain,
+            techniques=req.techniques,
+            out_dir=req.out_dir,
+            in_process=not req.live,
+            offline=not req.live,
+            live=req.live,
+            engine=req.engine or "",
+            token=req.token or "",
+            intensity=req.intensity,
+            program=req.program,
+            platform=req.platform,
+            verify_attempts=req.verify_attempts,
+            adapt=req.adapt,
+        )
+        if req.path:
+            result = runner.run_from_document(req.path, **common)
+        else:
+            result = runner.run_from_text(req.text, **common)
+        return result.to_dict()
 
     # -- frontend ---------------------------------------------------------- #
 

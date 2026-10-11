@@ -391,7 +391,7 @@ class ProgramExtractor:
                 verify.append(
                     "Every in-scope entry on this page is a marketplace listing. The "
                     "program's own scope text usually says the testable asset is the "
-                    "backend the app calls — find that host, add it here, and confirm "
+                    "backend the app calls \u2014 find that host, add it here, and confirm "
                     "it before running anything."
                 )
         if scope.out_of_scope:
