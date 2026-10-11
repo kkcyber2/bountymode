@@ -179,6 +179,14 @@ class CaseRunner:
                     method="POST",
                 )
                 result.findings.append(finding)
+            elif getattr(engine_result, "unavailable", False):
+                # The engine has no implementation for this technique.  It never
+                # ran, so it is not evidence of difficulty and must not count
+                # toward the error breaker.
+                result.skipped.append({
+                    "technique": tid,
+                    "reason": "not implemented by the engine",
+                })
             elif getattr(engine_result, "errored", False):
                 # Only a genuine dispatch failure counts toward the breaker; a
                 # clean negative (the test ran and found nothing) must not abort

@@ -76,8 +76,10 @@
 </header>
 <div class="wrap">
   <nav id="nav">
+    <div class="grp">Guided</div>
+    <button data-t="guided" class="active">✦ Guided run</button>
     <div class="grp">Workflow</div>
-    <button data-t="scope" class="active">1 · Import scope</button>
+    <button data-t="scope">1 · Import scope</button>
     <button data-t="check">2 · Check authorization</button>
     <button data-t="run">3 · Run case</button>
     <button data-t="findings">4 · Findings</button>
@@ -100,7 +102,49 @@
   </nav>
   <main>
 
-  <section id="scope" class="active">
+  <section id="guided" class="active">
+    <h2>Guided run — URL to submission-ready report</h2>
+    <div class="sub">
+      Paste a program page URL (e.g. a Bugcrowd engagement) or copy the scope
+      section in by hand. Review what was parsed, confirm the scope, then run.
+      Nothing is tested until you press <b>Run</b>, and it is a dry run unless you
+      tick <i>live</i>.
+    </div>
+
+    <div class="card">
+      <label>Step 1 · Program URL</label>
+      <input id="g-url" placeholder="https://bugcrowd.com/engagements/apps-plus2">
+      <div class="note">If the page is JavaScript-rendered it is read with a headless browser. If that is unavailable, paste the scope text below instead.</div>
+      <label>Step 1b · …or paste the scope / policy text</label>
+      <textarea id="g-text" rows="7" placeholder="## In Scope Targets&#10;| https://api.example.com | web |&#10;## Out of Scope&#10;| admin.example.com | internal |"></textarea>
+      <div class="row">
+        <div><label>Program name (optional)</label><input id="g-program" placeholder="apps-plus2"></div>
+        <div><label>Platform</label><input id="g-platform" placeholder="bugcrowd"></div>
+      </div>
+      <button class="act" onclick="doOnboard()">Step 2 · Parse &amp; review scope</button>
+      <div id="g-review"></div>
+    </div>
+
+    <div class="card" id="g-run-card" style="display:none">
+      <h3>Step 3 · Confirm and run</h3>
+      <div class="note warn">By confirming you state that you are authorized to test the assets listed above, and that you have read the program's rules. This tool never submits anything — you do.</div>
+      <div class="row">
+        <div><label>Your name (authorization)</label><input id="g-approver" placeholder="your name"></div>
+        <div><label>Target to test</label><input id="g-target" placeholder="leave blank to use the first concrete in-scope asset"></div>
+      </div>
+      <div class="row">
+        <div><label>Domain</label><select id="g-domain"><option value="ai_llm">ai_llm</option><option value="web_api">web_api</option><option value="cloud">cloud</option><option value="cicd">cicd</option></select></div>
+        <div><label>Verify attempts (N-of-M)</label><input id="g-attempts" type="number" value="5"></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="g-confirm"> I have reviewed the parsed scope, the exclusions and the <b>VERIFY</b> list</label>
+      <label class="chk"><input type="checkbox" id="g-live"> Live run (requires an engine URL; leave off for a dry run)</label>
+      <input id="g-engine" placeholder="engine URL (only for a live run)">
+      <button class="act" onclick="doGuidedRun()">Step 4 · Run</button>
+      <div id="g-result"></div>
+    </div>
+  </section>
+
+  <section id="scope">
     <h2>Import program scope</h2>
     <div class="sub">Paste a bug-bounty policy (markdown/plain text) or a scope JSON. Nothing is tested here — this only builds the machine-readable scope.</div>
     <div class="card">
@@ -579,6 +623,121 @@ async function doRepro(){
   try{ const d = await api('/api/upgrades/reproducibility?attempts='+parseInt($('rp-attempts').value)+'&successes='+parseInt($('rp-successes').value), null, 'POST');
     $('rp-out').innerHTML = `<div class="kv"><span>attempts: ${d.attempts}</span><span>successes: ${d.successes}</span><span>rate: ${d.rate}</span><span>reproducible: <b class="${d.reproducible?'ok':'err'}">${d.reproducible}</b></span><span>stable: ${d.stable}</span></div>`;
   }catch(e){ $('rp-out').innerHTML='<div class="note err">'+esc(e.message)+'</div>'; }
+}
+
+// --- guided run ---------------------------------------------------------- //
+let ONBOARD = null;
+
+function scopeReviewHtml(p){
+  const inScope = (p.in_scope||[]).map(t=>`<tr><td>${esc(t.pattern)}</td><td>${esc(t.kind)}</td><td><span class="pill p-allow">in scope</span></td></tr>`).join('');
+  const excl = (p.out_of_scope||[]).filter(r=>r.kind!=='technique')
+    .map(r=>`<tr><td>${esc(r.pattern)}</td><td>${esc(r.reason||'')}</td><td><span class="pill p-deny">excluded</span></td></tr>`).join('');
+  const prose = (p.out_of_scope||[]).filter(r=>r.kind==='technique')
+    .map(r=>`<li>${esc((r.pattern||'').slice(0,160))}</li>`).join('');
+  const listings = (p.listings||[]).map(l=>`<li>${esc(l.url)} <i>(listing \u2014 auto-excluded)</i></li>`).join('');
+  const rewards = Object.keys(p.rewards||{}).length
+    ? Object.entries(p.rewards).sort().map(([k,v])=>`<span class="pill">${esc(k)} $${v.toLocaleString()}</span>`).join(' ')
+    : '<i>none parsed</i>';
+  const verify = (p.VERIFY||[]).map(v=>`<li>${esc(v)}</li>`).join('');
+  const rules = (p.rules||[]).map(r=>`<li>${esc(r)}</li>`).join('');
+  const grade = p.confidence_grade || 'low';
+  return `
+    <div class="kv">
+      <span>program: <b>${esc(p.program)}</b></span>
+      <span>parsed via ${esc(p.extraction_source)}</span>
+      <span>confidence <b class="${grade==='high'?'ok':(grade==='medium'?'':'err')}">${esc(String(p.confidence))} (${esc(grade)})</b></span>
+      <span>digest ${esc((p.scope_digest||'').slice(0,12))}</span>
+    </div>
+    <h3>In-scope targets (${(p.in_scope||[]).length})</h3>
+    ${inScope ? `<table><tr><th>Asset</th><th>Kind</th><th>&nbsp;</th></tr>${inScope}</table>` : '<div class="note err">No testable asset was found. Add one before running.</div>'}
+    ${excl ? `<h3>Exclusions (${(p.out_of_scope||[]).filter(r=>r.kind!=='technique').length})</h3><table><tr><th>Pattern</th><th>Reason</th><th>&nbsp;</th></tr>${excl}</table>` : ''}
+    ${prose ? `<h3>Policy prohibitions</h3><ul class="lst">${prose}</ul>` : ''}
+    ${listings ? `<h3>Listing pages (not testable)</h3><ul class="lst">${listings}</ul>` : ''}
+    <h3>Rewards</h3><div>${rewards}</div>
+    <div class="note">Observed market data from the program page, not a guarantee of any payout.</div>
+    ${rules ? `<h3>Program rules</h3><ul class="lst">${rules}</ul>` : ''}
+    ${verify ? `<h3>\u26a0 VERIFY before testing (${(p.VERIFY||[]).length})</h3><ul class="lst warn">${verify}</ul>` : ''}
+    ${(p.warnings||[]).map(w=>`<div class="note warn">${esc(w)}</div>`).join('')}
+  `;
+}
+
+async function doOnboard(){
+  const body = {
+    url: $('g-url').value.trim(),
+    text: $('g-text').value,
+    program: $('g-program').value.trim() || null,
+    platform: $('g-platform').value.trim() || null
+  };
+  $('g-review').innerHTML = '<div class="note">Fetching and parsing\u2026 (a JS-rendered page can take up to a minute)</div>';
+  try{
+    const p = await api('/api/onboard', body);
+    ONBOARD = p;
+    $('g-review').innerHTML = scopeReviewHtml(p);
+    if(p.ok && (p.in_scope||[]).length){
+      $('g-run-card').style.display = 'block';
+      if(!$('g-target').value && (p.in_scope||[]).length){
+        const first = p.in_scope.find(t => !t.pattern.startsWith('*'));
+        if(first) $('g-target').value = first.pattern;
+      }
+    } else {
+      $('g-run-card').style.display = 'none';
+      if(p.paste_hint) $('g-review').innerHTML += `<div class="note warn"><pre>${esc(p.paste_hint)}</pre></div>`;
+    }
+  }catch(e){ $('g-review').innerHTML = '<div class="note err">'+esc(e.message)+'</div>'; }
+}
+
+async function doGuidedRun(){
+  if(!ONBOARD){ $('g-result').innerHTML='<div class="note err">Parse a scope first.</div>'; return; }
+  if(!$('g-confirm').checked){ $('g-result').innerHTML='<div class="note err">Tick the confirmation box to confirm you are authorized to test these assets.</div>'; return; }
+  const approver = $('g-approver').value.trim();
+  if(!approver){ $('g-result').innerHTML='<div class="note err">Enter your name — a run must record who authorized it.</div>'; return; }
+  const live = $('g-live').checked;
+  const engine = $('g-engine').value.trim();
+  if(live && !engine){ $('g-result').innerHTML='<div class="note err">A live run needs an engine URL.</div>'; return; }
+
+  $('g-result').innerHTML = '<div class="note">Running the seven-stage pipeline\u2026</div>';
+  try{
+    const d = await api('/api/guided-run', {
+      url: $('g-url').value.trim(),
+      text: $('g-text').value,
+      program: $('g-program').value.trim() || null,
+      platform: $('g-platform').value.trim() || null,
+      approved_by: approver,
+      target: $('g-target').value.trim(),
+      domain: $('g-domain').value,
+      verify_attempts: parseInt($('g-attempts').value) || 5,
+      live: live,
+      engine: engine || null
+    }, 'POST');
+
+    const stages = (d.stages||[]).map(s=>`<tr><td>${esc(s.stage)}</td><td>${s.ok?'<span class="pill p-allow">pass</span>':'<span class="pill p-deny">fail</span>'}</td><td>${esc(s.detail)}</td></tr>`).join('');
+    const ready = (d.readiness||[]).reduce((n,r)=>n+(r.ready?1:0),0);
+    let findings = '';
+    (d.findings||[]).forEach((f,i)=>{
+      const r = (d.readiness||[])[i] || {};
+      findings += `<tr><td>${f.ready||r.ready?'<span class="pill p-allow">READY</span>':'<span class="pill p-deny">NOT READY</span>'}</td>`
+        + `<td>${esc(f.severity)}</td><td>${f.cvss_score}</td><td>${esc(f.title)}</td>`
+        + `<td>${(r.missing||[]).concat(r.blockers||[]).map(esc).join(', ')||'\u2014'}</td></tr>`;
+    });
+    const skipped = (d.skipped||[]).slice(0,12).map(s=>`<li><code>${esc(s.technique)}</code> \u2014 ${esc((s.reason||'').slice(0,120))}</li>`).join('');
+
+    $('g-result').innerHTML = `
+      <div class="kv">
+        <span>mode: <b>${esc(d.mode)}</b></span>
+        <span>requests: ${d.requests_made}</span>
+        <span>findings: ${d.finding_count}</span>
+        <span>submission-ready: <b class="${ready?'ok':'err'}">${ready}/${d.finding_count}</b></span>
+        <span>out: <code>${esc(d.out_dir||'')}</code></span>
+      </div>
+      <h3>Stages</h3>
+      <table><tr><th>Stage</th><th>&nbsp;</th><th>Detail</th></tr>${stages}</table>
+      ${findings ? `<h3>Findings</h3><table><tr><th>Ready</th><th>Severity</th><th>CVSS</th><th>Title</th><th>Missing</th></tr>${findings}</table>` : '<div class="note">No findings in this run.</div>'}
+      ${skipped ? `<h3>Skipped by the authorization gate</h3><ul class="lst">${skipped}</ul>` : ''}
+      ${(d.errors||[]).length ? `<h3>Errors</h3><ul class="lst warn">${d.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul>` : ''}
+      <div class="note">${d.mode==='in-process-dry-run' ? 'This was a DRY RUN — no live target was contacted.' : 'Reports and evidence were written under the output directory above.'}</div>
+      <button class="act ghost" onclick="loadFindings()">View findings</button>
+    `;
+  }catch(e){ $('g-result').innerHTML = '<div class="note err">'+esc(e.message)+'</div>'; }
 }
 </script>
 </body>

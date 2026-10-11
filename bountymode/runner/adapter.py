@@ -132,6 +132,11 @@ class EngineResult:
     #: or the technique raised).  A clean negative -- the test ran and found
     #: nothing -- leaves this False, so it never trips the error breaker.
     errored: bool = False
+    # True when no engine implementation exists for the technique.  Such a
+    # technique is *skipped*, not failed: counting it as an error used to trip
+    # the consecutive-error breaker and abort the whole scan over techniques the
+    # engine was simply never going to run.
+    unavailable: bool = False
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], technique_id: str, target: str) -> "EngineResult":

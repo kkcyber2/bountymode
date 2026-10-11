@@ -31,6 +31,7 @@ from ..runner.adapter import AgathonAdapter, EngineResult
 from ..runner.case_runner import CaseRunner
 from ..scope.importer import ScopeImporter
 from ..triage.scorer import TriageScorer
+from ..program.verifier import SubmissionReadinessChecker
 from ..upgrades import (
     ChainNode,
     ChainPlanner,
@@ -152,6 +153,34 @@ class MinimiseRequest(BaseModel):
 class RegressionRequest(BaseModel):
     checks: List[Dict[str, Any]]
     observed: Dict[str, bool] = Field(default_factory=dict)
+
+
+class OnboardRequest(BaseModel):
+    """Fetch or paste a program page and return the parsed scope for review."""
+
+    url: str = ""
+    text: str = ""
+    program: Optional[str] = None
+    platform: Optional[str] = None
+    browser: bool = True
+
+
+class GuidedRunRequest(BaseModel):
+    """One point-and-click run: import -> gate -> scan -> verify -> report."""
+
+    url: str = ""
+    text: str = ""
+    program: Optional[str] = None
+    platform: Optional[str] = None
+    approved_by: str = ""
+    target: str = ""
+    domain: str = "ai_llm"
+    techniques: Optional[List[str]] = None
+    verify_attempts: int = 5
+    browser: bool = True
+    live: bool = False
+    engine: Optional[str] = None
+    intensity: str = "standard"
 
 
 # --------------------------------------------------------------------------- #
@@ -494,6 +523,111 @@ def create_app() -> FastAPI:
             )
 
         return Reproducer(attempts=attempts).replay(attempt).to_dict()
+
+    # -- guided onboarding ------------------------------------------------- #
+
+    @app.post("/api/onboard")
+    def onboard(req: OnboardRequest) -> Dict[str, Any]:
+        """Parse a program page (or pasted policy) into a reviewable scope.
+
+        Nothing is authorized by this call and nothing is tested.  It returns
+        the confirmation payload \u2014 in-scope assets, exclusions, policy
+        prohibitions and the ``VERIFY`` list \u2014 for a human to review.
+        """
+        from ..program import ProgramImporter
+
+        importer = ProgramImporter()
+        if req.text.strip():
+            imported = importer.import_text(
+                req.text, program=req.program, platform=req.platform, url=req.url or ""
+            )
+        elif req.url.strip():
+            imported = importer.import_url(
+                req.url, program=req.program, platform=req.platform, browser=req.browser
+            )
+        else:
+            raise HTTPException(400, "supply either a program URL or pasted policy text")
+
+        payload = imported.confirm_payload
+        payload["ok"] = imported.ok
+        if imported.fetch:
+            payload["fetch"] = imported.fetch.to_dict()
+            payload["paste_hint"] = imported.fetch.paste_hint
+        state["onboard"] = imported
+        return payload
+
+    @app.post("/api/guided-run")
+    def guided_run(req: GuidedRunRequest) -> Dict[str, Any]:
+        """Run the whole seven-stage pipeline from the UI.
+
+        The defaults are the safe ones: an in-process **dry run** against the
+        deterministic offline model, with no live target contacted.  A live run
+        requires ``live`` **and** an engine URL, and still passes through the
+        authorization gate and the stop-conditions.
+        """
+        from ..program import GuidedPipeline
+
+        workdir = Path(state["workdir"]) / "guided"
+        pipeline = GuidedPipeline(attempts=req.verify_attempts)
+        common: Dict[str, Any] = dict(
+            approved_by=req.approved_by,
+            target=req.target,
+            domain=req.domain,
+            techniques=req.techniques,
+            out_dir=str(workdir),
+            in_process=not req.live,
+            offline=not req.live,
+            live=req.live,
+            engine=req.engine or "",
+            intensity=req.intensity,
+            program=req.program,
+            platform=req.platform,
+            browser=req.browser,
+            verify_attempts=req.verify_attempts,
+        )
+        if req.text.strip():
+            result = pipeline.run_from_text(req.text, **common)
+        elif req.url.strip():
+            result = pipeline.run_from_url(req.url, **common)
+        else:
+            raise HTTPException(400, "supply either a program URL or pasted policy text")
+
+        payload = result.to_dict()
+        payload["ok"] = result.ok
+        payload["stages_ok"] = all(s.ok for s in result.stages)
+        state["findings"] = list(result.findings)
+        state["last_run"] = payload
+        state["workdir_last"] = str(workdir)
+        return payload
+
+    @app.get("/api/readiness")
+    def readiness() -> Dict[str, Any]:
+        """Submission readiness for the findings of the most recent run."""
+        findings: List[Finding] = state["findings"]
+        if not findings:
+            return {"findings": [], "ready": 0, "total": 0}
+        checker = SubmissionReadinessChecker()
+        rows = []
+        for f in findings:
+            verdict = f.readiness or checker.check(f, in_scope=True).to_dict()
+            rows.append({
+                "finding_id": f.id,
+                "title": f.title,
+                "severity": f.severity.value,
+                "cvss_score": f.cvss_score,
+                "reproducible": f.reproducible,
+                "reproduction_rate": f.reproduction_rate,
+                "evidence_count": len(f.observations),
+                "ready": bool(verdict.get("ready")),
+                "missing": list(verdict.get("missing", [])),
+                "blockers": list(verdict.get("blockers", [])),
+                "summary": verdict.get("summary", ""),
+            })
+        return {
+            "findings": rows,
+            "ready": sum(1 for r in rows if r["ready"]),
+            "total": len(rows),
+        }
 
     # -- frontend ---------------------------------------------------------- #
 

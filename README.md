@@ -281,6 +281,85 @@ disabled.
 
 ---
 
+## Program onboarding & the guided pipeline
+
+A real engagement does not begin with a hand-written YAML file; it begins with a
+program page. Two commands close that gap.
+
+### Onboard a real program page
+
+```bash
+bountymode program import https://bugcrowd.com/engagements/some-program
+#   or paste the scope text when the page is behind a login:
+bountymode program import --file policy.md --program some-program
+```
+
+This fetches the page (statically, then with a headless browser if the content
+is JavaScript-rendered), extracts the in-scope targets, exclusions, policy
+prohibitions, reward table and rate limits, and prints a confirmation view.
+Two properties are non-negotiable, because getting them wrong means testing
+someone else's infrastructure:
+
+- **The extractor never invents scope.** Only an unambiguous scope-table row
+  becomes a testable target. A bare hostname mentioned in a sentence is not
+  scope, and a third-party *marketplace listing* (a `marketplace.atlassian.com`
+  app page, a `github.com` repository, an app-store URL) is recorded and
+  excluded — never turned into a target, because testing the marketplace
+  operator is not what the program authorized.
+- **Ambiguity is surfaced, not resolved.** Anything the extractor is not certain
+  about lands in a `VERIFY` list for a human to confirm, and the confidence
+  grade says how much of the page was understood.
+
+The command writes three files: `scope.json` (the machine-enforced scope),
+`program-profile.json` (the extraction audit trail) and `authorization.json`
+(a **pending** receipt). Nothing is authorized until a human re-runs with
+`--approve-by <name>`, or uses `bountymode program confirm <scope.json>`.
+
+### One command, seven stages
+
+```bash
+bountymode pipeline run --file policy.md --program acme \
+    --approve-by "your name" --domain ai_llm
+```
+
+`pipeline run` chains the whole engagement in one shot:
+
+| Stage | What it does |
+|---|---|
+| `import` | Fetch/parse the page, or load a previously confirmed `scope.json` |
+| `scope` | Write the scope digest the approval is bound to |
+| `gate` | Deny-by-default authorization for every technique against every target |
+| `scan` | Drive the vendored engine in-process (or a remote engine with `--live`) |
+| `verify` | Replay each finding N-of-M times and report a reproduction rate |
+| `readiness` | Check each finding against the submission checklist |
+| `report` | Write HackerOne/Bugcrowd-format reports plus redacted evidence |
+
+The run is a **dry run by default** and never contacts a live target unless
+`--live` is passed together with `--engine`. Every stage still passes through
+the authorization gate and the stop-conditions.
+
+The approval is bound to a digest of the scope: if anyone edits `scope.json`
+after approval, the receipt no longer matches and the gate refuses the run.
+
+```bash
+# re-import once, then run repeatedly against the frozen scope
+bountymode program import --file policy.md -o engagement --approve-by "your name"
+bountymode pipeline run --file engagement/scope.json --approve-by "your name"
+```
+
+### Re-scan on an interval
+
+```bash
+bountymode program watch --file engagement/scope.json --interval 86400 --runs 7
+```
+
+Each pass is stored under its own `run-NNN/` directory and a `watch-state.json`
+records what changed (new findings, disappeared findings, digest movement), so a
+program that quietly adds an asset overnight shows up as a scope change rather
+than going unnoticed.
+
+---
+
 ## The web UI
 
 A local, single-operator UI over the *same* library code the CLI uses — every
@@ -294,12 +373,19 @@ bountymode-ui
 
 Then open **http://127.0.0.1:8765**.
 
-The UI exposes the full workflow (import scope → check authorization → run →
-findings → triage → report → dedupe/retest) plus a panel for every upgrade
-module, the model configuration and the engine catalogue. Runs are **dry by
-default**; `--in-process` drives the vendored engine locally, and a `--live`
-run requires an engine URL. Everything still passes through the gate and the
-stop-conditions.
+The **Guided run** tab is the whole engagement in one screen: paste a program
+URL (or the scope text), press *Parse & review scope* to see exactly what was
+extracted and what needs verifying, tick the confirmation box, and press *Run*.
+The result panel shows every stage, what the gate skipped and why, each finding
+with its CVSS score and a READY / NOT READY badge, and the exact checks a
+NOT READY finding is missing.
+
+The UI also exposes the step-by-step workflow (import scope → check
+authorization → run → findings → triage → report → dedupe/retest), plus a panel
+for every upgrade module, the model configuration and the engine catalogue.
+Runs are **dry by default**; `--in-process` drives the vendored engine locally,
+and a `--live` run requires an engine URL. Everything still passes through the
+gate and the stop-conditions.
 
 ---
 
@@ -463,6 +549,13 @@ bountymode run <case.yaml> [--scope S] [--in-process [--offline] [--intensity TI
 bountymode triage <findings.json> [--min-score N] [-o OUT]   score and rank findings
 bountymode report <findings.json> [--platform hackerone|bugcrowd] [--program P] [-o DIR]
 bountymode retest <finding_id> [--registry R] [--fixed]      record a regression retest
+bountymode program import <url>|--file F [--text T] [--approve-by N [--yes]] [-o DIR]
+                              onboard a program page into a scope file
+bountymode program show <url>|--profile P                          print a parsed profile
+bountymode program confirm <scope.json> --approve-by NAME          authorize an existing scope
+bountymode program watch <url>|--file F --interval S [--runs N]     re-scan and diff on an interval
+bountymode pipeline run <url>|--file F --approve-by NAME [--domain D] [--live --engine URL] [-o DIR]
+                              one command: import -> scope -> gate -> scan -> verify -> report
 bountymode models [--check]                                  show / probe the model config
 bountymode engine [--families] [--techniques]                inspect the vendored engine
 ```
@@ -520,8 +613,18 @@ python -m pytest -q
 
 The suite covers the scope matcher, the authorization gate, stop-conditions,
 the redactor and vault, the CVSS calculator, the report generator, the case
-runner, all four domains, all thirteen upgrade modules, every UI endpoint, and
-the in-process engine integration (catalogue, dispatch, configuration).
+runner, all four domains, all thirteen upgrade modules, every UI endpoint, the
+program importer (including the property that it never invents scope), the
+guided pipeline end to end, and the in-process engine integration (catalogue,
+dispatch, configuration).
+
+Two of those suites exist because a full pipeline run surfaced real defects that
+the unit tests had not: `tests/test_engine_dispatch.py` now asserts that *every*
+registered engine technique is callable \u2014 a tester whose second parameter is an
+attack payload rather than an intensity level was being called with the wrong
+argument and raising `TypeError` \u2014 and the pipeline suite asserts that an
+unimplemented technique is *skipped* rather than counted as an error, since the
+error breaker would otherwise abort the scan after three of them.
 
 ---
 

@@ -416,6 +416,256 @@ def cmd_retest(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# program onboarding
+# --------------------------------------------------------------------------- #
+
+def cmd_program_import(args: argparse.Namespace) -> int:
+    """Import a program policy into a reviewable scope file."""
+    from .program import ProgramImporter
+
+    importer = ProgramImporter()
+    if args.text is not None:
+        imported = importer.import_text(args.text, program=args.program,
+                                        platform=args.platform, url=args.url or "")
+    elif args.file:
+        imported = importer.import_file(args.file, program=args.program,
+                                        platform=args.platform)
+    else:
+        imported = importer.import_url(args.source, program=args.program,
+                                       platform=args.platform,
+                                       browser=not args.no_browser)
+
+    payload = imported.confirm_payload
+    if not imported.ok:
+        render_program_summary(payload, args.source)
+        print("\nImport failed \u2014 nothing was written.", file=sys.stderr)
+        hint = (imported.fetch.paste_hint if imported.fetch else "") or ""
+        if hint:
+            print("\n" + hint, file=sys.stderr)
+        return EXIT_USAGE
+
+    render_program_summary(payload, args.source)
+    importer.confirm(imported, approved_by="pending-review", out_dir=args.output)
+    print(f"\nWrote review files to {args.output}/")
+    print("  scope.json             \u2014 machine-enforced scope (edit anything the VERIFY list flags)")
+    print("  program-profile.json   \u2014 the extraction audit trail")
+    print("  authorization.json     \u2014 a *pending* receipt; re-run with --approve-by to authorize")
+
+    if args.yes:
+        approved = importer.confirm(imported, approved_by=args.approve_by, out_dir=args.output)
+        print(f"\nAuthorized: scope digest {approved.scope_digest[:12]} "
+              f"approved by {approved.approved_by}.")
+        return EXIT_OK
+
+    print("\nNothing has been authorized yet. Confirm the scope above, then re-run with")
+    print("  --approve-by <your name>   (or use `bountymode program confirm`)")
+    return EXIT_OK
+
+
+def cmd_program_show(args: argparse.Namespace) -> int:
+    """Print the parsed view for an existing profile, or re-parse a source."""
+    from .program import ProgramImporter
+
+    if args.profile:
+        _print(json.loads(Path(args.profile).read_text(encoding="utf-8")))
+        return EXIT_OK
+
+    importer = ProgramImporter()
+    if args.file:
+        imported = importer.import_file(args.file, program=args.program)
+    else:
+        imported = importer.import_url(args.source, program=args.program,
+                                       browser=not args.no_browser)
+    render_program_summary(imported.confirm_payload, args.source or args.file or "")
+    return EXIT_OK
+
+
+def cmd_program_confirm(args: argparse.Namespace) -> int:
+    """Re-issue an authorization receipt for an already-imported scope."""
+    from .program import ProgramImporter, scope_hash
+
+    scope = _load_scope(args.scope)
+    importer = ProgramImporter()
+    imported = importer.import_text("confirmed scope", program=scope.program)
+    imported.scope = scope
+    imported.report.confidence = 1.0
+    receipt = importer.confirm(imported, approved_by=args.approve_by,
+                               note=args.note or "", out_dir=args.output)
+    print(f"Authorized program '{scope.program}'")
+    print(f"  approver      : {receipt.approved_by}")
+    print(f"  scope digest  : {receipt.scope_digest}")
+    print(f"  in-scope      : {receipt.in_scope_count}")
+    print(f"  exclusions    : {receipt.exclusion_count}")
+    print(f"  receipt       : {args.output}/authorization.json")
+    assert scope_hash(scope) == receipt.scope_digest
+    return EXIT_OK
+
+
+def render_program_summary(payload: Dict[str, Any], source: str) -> None:
+    """Print the confirmation view a human must sign off on."""
+    print(f"\nProgram : {payload['program']}")
+    if source:
+        print(f"Source  : {source}")
+    print(f"Parsed  : via {payload['extraction_source']} "
+          f"\u2014 confidence {payload['confidence']:.0%} ({payload['confidence_grade']})")
+
+    in_scope = payload["in_scope"]
+    print(f"\nIN SCOPE ({len(in_scope)})")
+    if in_scope:
+        for t in in_scope:
+            print(f"  + {t['pattern']}  [{t['kind']}]")
+    else:
+        print("  (none \u2014 nothing is testable yet)")
+
+    exclusions = [r for r in payload["out_of_scope"] if r.get("kind") != "technique"]
+    prose = [r for r in payload["out_of_scope"] if r.get("kind") == "technique"]
+    if exclusions:
+        print(f"\nOUT OF SCOPE ({len(exclusions)})")
+        for r in exclusions:
+            reason = f" \u2014 {r['reason']}" if r.get("reason") else ""
+            print(f"  - {r['pattern']}{reason}")
+    if prose:
+        print(f"\nPOLICY PROHIBITIONS ({len(prose)})")
+        for r in prose:
+            print(f"  \u00b7 {' '.join(r['pattern'].split())[:100]}")
+
+    if payload["listings"]:
+        print(f"\nLISTINGS (not testable hosts, auto-excluded) ({len(payload['listings'])})")
+        for lst in payload["listings"]:
+            print(f"  \u2192 {lst['url']}")
+
+    if payload["rewards"]:
+        table = ", ".join(f"{k} ${v:,}" for k, v in sorted(payload["rewards"].items()))
+        print(f"\nREWARDS (observed, not guaranteed): {table}")
+
+    print(f"\nLIMITS  : {payload['rate_limit_rps']:.3f} req/s, "
+          f"max {payload['max_requests']} requests")
+    blocked = ", ".join(payload["prohibited_techniques"]) or "\u2014"
+    print(f"TECHNIQUES BLOCKED BY POLICY: {blocked}")
+
+    if payload["rules"]:
+        print(f"\nPROGRAM RULES ({len(payload['rules'])})")
+        for rule in payload["rules"][:8]:
+            print(f"  \u00b7 {rule[:110]}")
+
+    if payload["VERIFY"]:
+        print(f"\n\u26a0 VERIFY BEFORE TESTING ({len(payload['VERIFY'])})")
+        for marker in payload["VERIFY"]:
+            print(f"  ? {marker}")
+
+    for warning in payload.get("warnings", []):
+        print(f"\n! {warning}")
+
+
+def cmd_pipeline_run(args: argparse.Namespace) -> int:
+    """One command: import -> scope -> gate -> scan -> verify -> report."""
+    from .program import GuidedPipeline
+
+    pipeline = GuidedPipeline(attempts=args.verify_attempts)
+    common: Dict[str, Any] = dict(
+        approved_by=args.approve_by,
+        target=args.target or "",
+        domain=args.domain,
+        techniques=args.technique or None,
+        out_dir=args.output,
+        in_process=not args.live,
+        offline=not args.live,
+        live=args.live,
+        engine=args.engine or "",
+        token=args.token or "",
+        intensity=args.intensity or "standard",
+        program=args.program,
+        platform=args.platform,
+        browser=not args.no_browser,
+        verify_attempts=args.verify_attempts,
+    )
+    result = pipe_run(pipeline, args, common)
+
+    print(f"\nGuided run \u2014 {result.program or 'unknown program'}  [{result.mode}]")
+    print("\nStages")
+    for stage in result.stages:
+        print(f"  {'PASS' if stage.ok else 'FAIL'}  {stage.name:<10} {stage.detail}")
+
+    if result.skipped:
+        print(f"\nSkipped by the authorization gate ({len(result.skipped)})")
+        for entry in result.skipped[:10]:
+            print(f"  - {entry['technique']}: {entry['reason'][:90]}")
+        if len(result.skipped) > 10:
+            print(f"  ... and {len(result.skipped) - 10} more")
+
+    if result.findings:
+        print(f"\nFindings ({len(result.findings)}) \u2014 {result.ready_count} submission-ready")
+        for finding, verdict in zip(result.findings, result.readiness):
+            flag = "READY" if verdict.get("ready") else "NOT READY"
+            print(f"  [{flag}] {finding.severity.value.upper():<12} "
+                  f"CVSS {finding.cvss_score:.1f}  {finding.title}")
+            if not verdict.get("ready"):
+                gaps = list(verdict.get("missing", [])) + list(verdict.get("blockers", []))
+                print(f"             not ready \u2014 {', '.join(gaps) or 'unspecified'}")
+                for check in verdict.get("checks", []):
+                    if not check.get("passed") and check.get("detail"):
+                        print(f"               \u00b7 {check['label']}: {check['detail']}")
+
+    if result.errors:
+        print("\nErrors")
+        for err in result.errors[:10]:
+            print(f"  ! {err}")
+
+    print(f"\nReports and evidence: {result.out_dir}/")
+    if not args.live:
+        print("This was a DRY RUN. No live target was contacted.")
+    return EXIT_OK if result.ok else EXIT_BLOCKED
+
+
+def pipe_run(pipeline: Any, args: argparse.Namespace, common: Dict[str, Any]) -> Any:
+    """Dispatch the guided pipeline against a URL or a local file."""
+    if args.file:
+        return pipeline.run_from_file(args.file, **common)
+    return pipeline.run_from_url(args.source, **common)
+
+
+def cmd_program_watch(args: argparse.Namespace) -> int:
+    """Re-run the pipeline on an interval and report what changed."""
+    from .program import GuidedPipeline, ProgramWatcher
+
+    pipeline = GuidedPipeline(attempts=args.verify_attempts)
+    base: Dict[str, Any] = dict(
+        approved_by=args.approve_by,
+        target=args.target or "",
+        domain=args.domain,
+        in_process=not args.live,
+        offline=not args.live,
+        live=args.live,
+        engine=args.engine or "",
+        intensity=args.intensity or "standard",
+        program=args.program,
+        browser=not args.no_browser,
+        verify_attempts=args.verify_attempts,
+    )
+
+    def scan(run_index: int) -> Any:
+        local = dict(base)
+        local["out_dir"] = str(Path(args.output) / f"run-{run_index:03d}")
+        if args.file:
+            return pipeline.run_from_file(args.file, **local)
+        return pipeline.run_from_url(args.source, **local)
+
+    state_path = Path(args.output) / "watch-state.json"
+    watcher = ProgramWatcher(
+        scan,
+        state_path=str(state_path),
+        interval_s=args.interval,
+        max_runs=args.runs,
+        on_run=lambda run: print(f"  {run.summary}"),
+    )
+    print(f"Watching {args.source or args.file} every {args.interval:.0f}s, "
+          f"{args.runs or 'unlimited'} pass(es)")
+    runs = watcher.watch(iterations=args.runs)
+    print(f"\nCompleted {len(runs)} pass(es); state in {state_path}")
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------- #
 # parser
 # --------------------------------------------------------------------------- #
 
@@ -500,6 +750,91 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--fixed", action="store_true", help="the finding no longer reproduces")
     rt.add_argument("--note", default=None)
     rt.set_defaults(func=cmd_retest)
+
+    # -- program onboarding ------------------------------------------------ #
+    pg = sub.add_parser(
+        "program",
+        help="onboard a real program page (URL or pasted policy) into a scope file",
+    )
+    pgsub = pg.add_subparsers(dest="program_command", required=True)
+
+    pi = pgsub.add_parser("import", help="fetch/parse a program page or pasted policy")
+    pi.add_argument("source", nargs="?", default="",
+                    help="program URL (e.g. a Bugcrowd engagement page)")
+    pi.add_argument("--file", default=None, help="read the policy from a local file instead")
+    pi.add_argument("--text", default=None, help="parse policy text supplied directly")
+    pi.add_argument("--url", default=None, help="the page the pasted text came from")
+    pi.add_argument("--program", default=None, help="override the parsed program name")
+    pi.add_argument("--platform", default=None, help="override the parsed platform")
+    pi.add_argument("--no-browser", action="store_true",
+                    help="skip the headless-browser fallback (static fetch only)")
+    pi.add_argument("--approve-by", default="operator",
+                    help="name of the human authorizing the scope")
+    pi.add_argument("--yes", action="store_true",
+                    help="authorize immediately instead of leaving the receipt pending")
+    pi.add_argument("-o", "--output", default="program-scope")
+    pi.set_defaults(func=cmd_program_import)
+
+    ps = pgsub.add_parser("show", help="print a parsed program profile or re-parse a source")
+    ps.add_argument("source", nargs="?", default="")
+    ps.add_argument("--profile", default=None, help="a program-profile.json to print")
+    ps.add_argument("--file", default=None, help="a local policy file to parse")
+    ps.add_argument("--program", default=None)
+    ps.add_argument("--no-browser", action="store_true")
+    ps.set_defaults(func=cmd_program_show)
+
+    pc = pgsub.add_parser("confirm", help="authorize an existing scope.json")
+    pc.add_argument("scope")
+    pc.add_argument("--approve-by", required=True)
+    pc.add_argument("--note", default=None)
+    pc.add_argument("-o", "--output", default="program-scope")
+    pc.set_defaults(func=cmd_program_confirm)
+
+    pw = pgsub.add_parser("watch", help="re-scan on an interval and report what changed")
+    pw.add_argument("source", nargs="?", default="")
+    pw.add_argument("--file", default=None)
+    pw.add_argument("--approve-by", default="operator")
+    pw.add_argument("--target", default=None)
+    pw.add_argument("--domain", default="ai_llm")
+    pw.add_argument("--interval", type=float, default=3600.0, help="seconds between passes")
+    pw.add_argument("--runs", type=int, default=None, help="stop after N passes")
+    pw.add_argument("--verify-attempts", type=int, default=5)
+    pw.add_argument("--program", default=None)
+    pw.add_argument("--intensity", default=None,
+                    choices=["recon", "standard", "aggressive", "greasy"])
+    pw.add_argument("--live", action="store_true")
+    pw.add_argument("--engine", default=None)
+    pw.add_argument("--no-browser", action="store_true")
+    pw.add_argument("-o", "--output", default="watch-run")
+    pw.set_defaults(func=cmd_program_watch)
+
+    # -- guided pipeline ---------------------------------------------------- #
+    pl = sub.add_parser(
+        "pipeline",
+        help="one command: import -> scope -> gate -> scan -> verify -> report",
+    )
+    plsub = pl.add_subparsers(dest="pipeline_command", required=True)
+    plr = plsub.add_parser("run", help="run the full guided pipeline")
+    plr.add_argument("source", nargs="?", default="", help="program URL")
+    plr.add_argument("--file", default=None, help="a local policy file instead of a URL")
+    plr.add_argument("--approve-by", required=True,
+                     help="name of the human authorizing this run (required)")
+    plr.add_argument("--target", default=None,
+                     help="the asset to test; defaults to the first concrete scope entry")
+    plr.add_argument("--domain", default="ai_llm")
+    plr.add_argument("--technique", action="append", default=None)
+    plr.add_argument("--verify-attempts", type=int, default=5)
+    plr.add_argument("--program", default=None)
+    plr.add_argument("--platform", default=None)
+    plr.add_argument("--intensity", default=None,
+                     choices=["recon", "standard", "aggressive", "greasy"])
+    plr.add_argument("--live", action="store_true",
+                     help="dispatch to a remote engine (requires --engine, never on by default)")
+    plr.add_argument("--engine", default=None)
+    plr.add_argument("--token", default=None)
+    plr.add_argument("--no-browser", action="store_true")
+    plr.add_argument("-o", "--output", default="bounty-run")
+    plr.set_defaults(func=cmd_pipeline_run)
 
     return p
 

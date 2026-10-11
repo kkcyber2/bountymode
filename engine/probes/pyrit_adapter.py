@@ -48,7 +48,7 @@ PYRIT_SCENARIOS: List[Dict[str, str]] = [
 
 PYRIT_PROBE_COUNT = len(PYRIT_SCENARIOS)
 
-_BREACHO_MARKERS = (
+_BREACH_MARKERS = (
     "api key",
     "password",
     "secret",
@@ -64,6 +64,7 @@ def extend_registry_with_pyrit(base: List[Dict[str, Any]]) -> List[Dict[str, Any
     """Append PyRIT scenario entries to the bridge attack registry."""
     try:
         import pyrit  # noqa: F401
+
         logger.info("[pyrit] package detected — registering %d scenarios", PYRIT_PROBE_COUNT)
     except ImportError:
         logger.info("[pyrit] not installed — registering %d fallback scenarios", PYRIT_PROBE_COUNT)

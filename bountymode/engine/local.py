@@ -41,6 +41,20 @@ log = logging.getLogger(__name__)
 #: Scan intensities understood by the engine's tier logic.
 INTENSITIES = ("recon", "standard", "aggressive", "greasy")
 
+#: Parameter names that mean "the model under test" rather than "an intensity".
+_MODEL_PARAM_NAMES = frozenset({"model", "target_model", "model_name"})
+
+#: Parameter names that mean "the thing being tested" rather than "a payload".
+_TARGET_PARAM_NAMES = frozenset({"target", "url", "endpoint", "base_url", "target_url"})
+
+#: Parameter names that mean "the scan tier".
+_INTENSITY_PARAM_NAMES = frozenset({"intensity", "level", "tier", "scan_intensity"})
+
+#: Parameter names that mean "the model client".
+_CLIENT_PARAM_NAMES = frozenset(
+    {"client", "llm", "llm_client", "model_client", "chat_client", "api_client"}
+)
+
 
 def _resolve_intensity(name: str) -> Any:
     """Map a plain string onto the engine's ``Intensity`` enum.
@@ -143,6 +157,7 @@ class LocalEngine:
                 target=target,
                 success=False,
                 errored=True,
+                unavailable=True,
                 evidence=f"no engine technique matches {technique.engine_key or technique.id!r}",
             )
 
@@ -160,7 +175,7 @@ class LocalEngine:
         model = self._effective_model()
 
         try:
-            raw = self._invoke(fn, client, model)
+            raw = self._invoke(fn, client, model, target)
         except Exception as exc:  # noqa: BLE001 - the runner records errors
             log.warning("[engine] %s raised: %s", entry.get("name"), exc)
             return EngineResult(
@@ -173,16 +188,58 @@ class LocalEngine:
 
         return _normalise(raw, technique, target, entry)
 
-    def _invoke(self, fn: Callable[..., Any], client: Any, model: str) -> Any:
-        """Call a registry function, honouring its real arity."""
+    def _invoke(
+        self, fn: Callable[..., Any], client: Any, model: str, target: str = ""
+    ) -> Any:
+        """Call a registry entry, binding each argument by parameter *name*.
+
+        The catalogue holds two different call shapes and arity cannot tell them
+        apart:
+
+        * module-level functions: ``fn(client, model[, intensity])``
+        * bound tester methods: ``fn(target_model[, payload])`` \u2014 there is no
+          client parameter at all because ``self`` is already bound
+
+        Guessing by arity, as this used to, called
+        ``test_rtl_override_injection(target_model, harmful_instruction)`` with an
+        intensity enum in place of the payload, which raised ``TypeError`` and
+        turned a real technique into a silent error.  Names are unambiguous, so
+        every positional parameter is now matched by name: model, target,
+        intensity and client each get the right value, and any remaining
+        required parameter is a payload, which is fed the target as text.
+        """
         try:
-            sig = inspect.signature(fn)
-            accepts_intensity = len(sig.parameters) >= 3
+            params = list(inspect.signature(fn).parameters.values())
         except (TypeError, ValueError):
-            accepts_intensity = False
-        if accepts_intensity:
-            return fn(client, model, self._intensity_value())
-        return fn(client, model)
+            return fn(client, model)
+
+        positional = [
+            p for p in params
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+        if not positional:
+            return fn()
+
+        args: List[Any] = []
+        for index, param in enumerate(positional):
+            name = param.name
+            if name in _MODEL_PARAM_NAMES:
+                args.append(model)
+            elif name in _TARGET_PARAM_NAMES:
+                args.append(target)
+            elif name in _INTENSITY_PARAM_NAMES:
+                args.append(self._intensity_value())
+            elif name in _CLIENT_PARAM_NAMES:
+                args.append(client)
+            elif param.default is not inspect.Parameter.empty:
+                args.append(param.default)
+            elif index == 0:
+                # An un-named first parameter is the client in the module-level
+                # convention; a payload can never be first.
+                args.append(client)
+            else:
+                args.append(target or "")
+        return fn(*args)
 
     # -- catalogue passthrough --------------------------------------------- #
 
@@ -211,12 +268,18 @@ def _normalise(
     elif isinstance(raw, dict):
         data = dict(raw)
 
-    vuln = data.get("vulnerability_type", "")
-    if hasattr(vuln, "value"):
-        vuln = vuln.value
+    vulnerable_type = data.get("vulnerability_type", "")
+    if hasattr(vulnerable_type, "value"):
+        vulnerable_type = vulnerable_type.value
 
     success_score = _as_float(data.get("success_score"), 0.0)
     confidence = _as_float(data.get("reliability"), success_score) or success_score
+
+    # Full attack responses are long; keep the evidence column readable.
+    response = str(data.get("response", "") or "")
+    evidence = str(data.get("evidence", "") or "")[:300]
+    if not evidence:
+        evidence = response[:300]
 
     return EngineResult(
         technique_id=technique.id,
@@ -225,8 +288,8 @@ def _normalise(
         success_score=success_score,
         response=str(data.get("response", "") or ""),
         payload_used=str(data.get("payload_used", "") or ""),
-        evidence=str(data.get("evidence", "") or ""),
-        vulnerability_type=str(vuln or data.get("attack_type", "") or technique.category),
+        evidence=evidence,
+        vulnerability_type=str(vulnerable_type or data.get("attack_type", "") or technique.category),
         confidence=confidence,
         target_model=str(data.get("target_model", "") or ""),
     )

@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -85,6 +85,11 @@ class ScopeTarget:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScopeTarget":
+        known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in data.items() if k in known})
+
 
 @dataclass
 class OutOfScopeRule:
@@ -96,6 +101,11 @@ class OutOfScopeRule:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "OutOfScopeRule":
+        known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass
@@ -109,7 +119,7 @@ class ProgramScope:
     # Technique ids the program forbids outright (e.g. "economic_denial").
     prohibited_techniques: List[str] = field(default_factory=list)
     # Technique ids the program explicitly permits even though they are
-    # usually disruptive (rare — most programs never allow these).
+    # usually disruptive (rare -- most programs never allow these).
     permitted_techniques: List[str] = field(default_factory=list)
     rate_limit_rps: float = 1.0
     max_requests: int = 500
@@ -120,6 +130,25 @@ class ProgramScope:
     source_url: str = ""
     raw_hash: str = ""
     imported_at: str = field(default_factory=_now_iso)
+
+    # -- onboarding metadata ------------------------------------------------ #
+    #: Where the scope came from, when it was imported from a program page.
+    program_url: str = ""
+    #: Observed payout ranges by priority, e.g. ``{"P1": 1500, "P2": 900}``.
+    #: These are *observed market data*, recorded for planning only.
+    reward_table: Dict[str, int] = field(default_factory=dict)
+    #: In-scope entries that are third-party listing pages rather than testable
+    #: hosts (a marketplace URL, an app-store link).  Recorded so a reviewer can
+    #: see what was parsed and automatically excluded.
+    listings: List[Dict[str, str]] = field(default_factory=list)
+    #: Program rules worth a human's attention, quoted from the policy.
+    notes: List[str] = field(default_factory=list)
+    #: Everything the importer was unsure about.  Each entry starts with the
+    #: asset or topic it concerns and asks the reviewer to confirm it.
+    verify_markers: List[str] = field(default_factory=list)
+    #: True when the program requires a human to verify findings -- automated
+    #: output alone is not eligible.
+    requires_human_verification: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -132,14 +161,16 @@ class ProgramScope:
         data = dict(data)
 
         def _target(e: Any) -> ScopeTarget:
-            return ScopeTarget(pattern=e) if isinstance(e, str) else ScopeTarget(**e)
+            return ScopeTarget(pattern=e) if isinstance(e, str) else ScopeTarget.from_dict(e)
 
         def _rule(e: Any) -> OutOfScopeRule:
-            return OutOfScopeRule(pattern=e) if isinstance(e, str) else OutOfScopeRule(**e)
+            return OutOfScopeRule(pattern=e) if isinstance(e, str) else OutOfScopeRule.from_dict(e)
 
         data["in_scope"] = [_target(t) for t in data.get("in_scope", [])]
         data["out_of_scope"] = [_rule(r) for r in data.get("out_of_scope", [])]
-        return cls(**data)
+        # Tolerate scope files written by an older version.
+        known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass
@@ -192,7 +223,8 @@ class Technique:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Technique":
-        return cls(**data)
+        known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass
@@ -219,7 +251,8 @@ class Observation:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Observation":
-        return cls(**data)
+        known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass
@@ -254,6 +287,14 @@ class Finding:
     created_at: str = field(default_factory=_now_iso)
     status: str = "new"  # new | triaged | duplicated | reported | fixed | retested
 
+    # -- verification ------------------------------------------------------- #
+    #: How many times the technique was replayed during verification.
+    verification_attempts: int = 0
+    #: How many of those attempts reproduced the finding.
+    verification_successes: int = 0
+    #: ``{"ready": bool, "missing": [...], "checks": {...}}`` once assessed.
+    readiness: Dict[str, Any] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         if not self.fingerprint:
             self.fingerprint = compute_fingerprint(
@@ -271,7 +312,8 @@ class Finding:
         data = dict(data)
         data["severity"] = Severity(data.get("severity", "medium"))
         data["observations"] = [Observation.from_dict(o) for o in data.get("observations", [])]
-        return cls(**data)
+        known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 _FP_NOISE = re.compile(r"[^a-z0-9]+")
