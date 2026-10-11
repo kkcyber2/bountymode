@@ -20,6 +20,8 @@ htmlcov/
 
 # --- Bounty Mode run artifacts (may contain redacted evidence) ---
 bounty-run/
+auto-run/
+auto-run-example/
 reports/
 registry.json
 *-scope.json
@@ -46,3 +48,6 @@ Thumbs.db
 # local live-validation scratch
 live-test/run-*/
 live-test/reports/
+
+# generated example fixture (rebuilt by tools/auto_example.py)
+examples/*.pdf
