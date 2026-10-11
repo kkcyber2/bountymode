@@ -31,6 +31,11 @@ REQUIRED_FIELDS = [
     ("remediation", "how to fix it"),
 ]
 
+#: Em dash, held as a constant rather than written inline inside an f-string
+#: expression: a backslash is illegal in an f-string expression part before
+#: Python 3.12, and keeping the file pure ASCII keeps the push transport-proof.
+DASH = "\u2014"
+
 PLATFORM_TEMPLATES = {
     "hackerone": {
         "sections": [
@@ -198,7 +203,7 @@ class ReportGenerator:
                 *[f"`{o}`" for o in f.owasp_llm],
                 *[f"`{m}`" for m in f.mitre_atlas],
             ])
-        ) or "\u2014"
+        ) or DASH
 
         missing_note = ""
         if not v.ok:
@@ -221,7 +226,7 @@ class ReportGenerator:
         parts = [
             f"# {f.title}",
             "",
-            f"**Program:** {self.program or '\u2014'}  ",
+            f"**Program:** {self.program or DASH}  ",
             f"**Platform:** {self.platform}  ",
             f"**Severity:** {sev_label} ({f.severity.value})  ",
             f"**CVSS v3.1:** `{f.cvss_vector}` \u2014 **{f.cvss_score:.1f}**  ",
@@ -354,8 +359,8 @@ class ReportGenerator:
         lines = ["| # | Kind | Status | Redactions | SHA-256 |", "|---|------|--------|-----------|---------|"]
         for i, o in enumerate(f.observations, 1):
             lines.append(
-                f"| {i} | {o.kind} | {o.status if o.status is not None else '\u2014'} | "
-                f"{o.redactions} | `{(o.sha256 or '\u2014')[:16]}` |"
+                f"| {i} | {o.kind} | {o.status if o.status is not None else DASH} | "
+                f"{o.redactions} | `{(o.sha256 or DASH)[:16]}` |"
             )
         return "\n".join(lines)
 
