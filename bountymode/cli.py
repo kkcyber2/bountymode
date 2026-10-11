@@ -113,7 +113,7 @@ def cmd_scope_import(args: argparse.Namespace) -> int:
     print(f"Imported program '{scope.program}' ({scope.platform}).")
     print(f"  in-scope assets : {len(scope.in_scope)}")
     print(f"  exclusions      : {len(scope.out_of_scope)}")
-    print(f"  prohibited      : {', '.join(scope.prohibited_techniques) or '—'}")
+    print(f"  prohibited      : {', '.join(scope.prohibited_techniques) or '\u2014'}")
     print(f"  rate limit      : {scope.rate_limit_rps:.3f} req/s, max {scope.max_requests} requests")
     print(f"  wrote           : {out}")
     if importer.warnings:
@@ -411,7 +411,7 @@ def cmd_retest(args: argparse.Namespace) -> int:
     if f is None:
         print(f"finding {args.finding_id} not found in {args.registry}", file=sys.stderr)
         return EXIT_USAGE
-    print(f"{f.id}: {'STILL REPRODUCES — escalate' if not args.fixed else 'FIXED — close'}")
+    print(f"{f.id}: {'STILL REPRODUCES \u2014 escalate' if not args.fixed else 'FIXED \u2014 close'}")
     return EXIT_OK
 
 
@@ -594,14 +594,25 @@ def cmd_pipeline_run(args: argparse.Namespace) -> int:
             print(f"  ... and {len(result.skipped) - 10} more")
 
     if result.findings:
-        print(f"\nFindings ({len(result.findings)}) \u2014 {result.ready_count} submission-ready")
-        for finding, verdict in zip(result.findings, result.readiness):
+        print(f"\nFindings ({len(result.findings)}) \u2014 {result.verified_count} verified, "
+              f"{result.ready_count} submission-ready")
+        for index, (finding, verdict) in enumerate(zip(result.findings, result.readiness)):
+            report = result.verified[index] if index < len(result.verified) else {}
+            vverdict = str(report.get("verdict", "")).upper() or "UNKNOWN"
             flag = "READY" if verdict.get("ready") else "NOT READY"
             print(f"  [{flag}] {finding.severity.value.upper():<12} "
                   f"CVSS {finding.cvss_score:.1f}  {finding.title}")
+            print(f"             verification: {vverdict} "
+                  f"({report.get('successes', 0)}/{report.get('attempts', 0)} attempts, "
+                  f"oracle={report.get('oracle', 'n/a')})")
+            for reason in report.get("reasons", [])[:3]:
+                print(f"               \u00b7 {reason}")
+            if report.get("negative_control_passed") is False:
+                print("               \u00b7 NEGATIVE CONTROL FIRED \u2014 the signal is not "
+                      "specific to the weakness")
             if not verdict.get("ready"):
-                gaps = list(verdict.get("missing", [])) + list(verdict.get("blockers", []))
-                print(f"             not ready \u2014 {', '.join(gaps) or 'unspecified'}")
+                gaps = list(verdict.get("blockers", [])) + list(verdict.get("missing", []))
+                print(f"             not submission-ready \u2014 {', '.join(gaps) or 'unspecified'}")
                 for check in verdict.get("checks", []):
                     if not check.get("passed") and check.get("detail"):
                         print(f"               \u00b7 {check['label']}: {check['detail']}")
@@ -611,7 +622,11 @@ def cmd_pipeline_run(args: argparse.Namespace) -> int:
         for err in result.errors[:10]:
             print(f"  ! {err}")
 
-    print(f"\nReports and evidence: {result.out_dir}/")
+    verified = result.verified_count
+    print(f"\nVerification: {verified}/{len(result.findings)} finding(s) reproduced.")
+    print("Final confirmation of a vulnerability is the bounty program's job; "
+          "reports state reproducibility and evidence, not certainty.")
+    print(f"Reports and evidence: {result.out_dir}/")
     if not args.live:
         print("This was a DRY RUN. No live target was contacted.")
     return EXIT_OK if result.ok else EXIT_BLOCKED
