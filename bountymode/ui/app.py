@@ -31,7 +31,13 @@ from ..runner.adapter import AgathonAdapter, EngineResult
 from ..runner.case_runner import CaseRunner
 from ..scope.importer import ScopeImporter
 from ..triage.scorer import TriageScorer
-from ..program.verifier import SubmissionReadinessChecker
+from ..verify import (
+    GenericVerifier,
+    SimulatedTarget,
+    SubmissionReadinessChecker,
+    client_sender,
+    simulated_sender,
+)
 from ..upgrades import (
     ChainNode,
     ChainPlanner,
@@ -186,6 +192,15 @@ class GuidedRunRequest(BaseModel):
 # --------------------------------------------------------------------------- #
 # app
 # --------------------------------------------------------------------------- #
+
+class VerifyRequest(BaseModel):
+    """Verify one finding by replaying a class-appropriate oracle N of M times."""
+
+    finding: Dict[str, Any]
+    attempts: int = 3
+    in_scope: bool = True
+    vulnerable: bool = True
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -627,6 +642,34 @@ def create_app() -> FastAPI:
             "findings": rows,
             "ready": sum(1 for r in rows if r["ready"]),
             "total": len(rows),
+        }
+
+    @app.post("/api/verify")
+    def verify_finding(req: VerifyRequest) -> Dict[str, Any]:
+        """Replay a finding through the generic verification engine.
+
+        Uses the simulated vulnerable target so the whole flow is exercisable
+        from the UI without contacting anything; the verdict is still computed
+        by the real oracle, so a hardened target reports ``unverified``.
+        """
+        try:
+            finding = Finding.from_dict(req.finding)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"invalid finding: {exc}") from exc
+
+        sim = SimulatedTarget(vulnerable=req.vulnerable)
+        workdir = Path(state["workdir"]) / "verify-evidence"
+        vault = EvidenceVault(str(workdir), redactor=Redactor())
+        report = GenericVerifier(attempts=req.attempts).verify(
+            finding, simulated_sender(sim), vault=vault, in_scope=req.in_scope
+        )
+        return {
+            "verdict": report.verdict,
+            "summary": report.summary,
+            "report": report.to_dict(),
+            "readiness": report.readiness,
+            "requests_sent": report.requests_sent,
+            "requests_reused": report.requests_reused,
         }
 
     # -- frontend ---------------------------------------------------------- #
