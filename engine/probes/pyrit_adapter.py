@@ -48,7 +48,7 @@ PYRIT_SCENARIOS: List[Dict[str, str]] = [
 
 PYRIT_PROBE_COUNT = len(PYRIT_SCENARIOS)
 
-_BREACH_MARKERS = (
+_BREACHO_MARKERS = (
     "api key",
     "password",
     "secret",
@@ -64,7 +64,6 @@ def extend_registry_with_pyrit(base: List[Dict[str, Any]]) -> List[Dict[str, Any
     """Append PyRIT scenario entries to the bridge attack registry."""
     try:
         import pyrit  # noqa: F401
-
         logger.info("[pyrit] package detected — registering %d scenarios", PYRIT_PROBE_COUNT)
     except ImportError:
         logger.info("[pyrit] not installed — registering %d fallback scenarios", PYRIT_PROBE_COUNT)
@@ -107,11 +106,14 @@ def run_pyrit_probe(
         vuln = VulnerabilityType.JAILBREAK
 
     return AttackResult(
-        success=success,
+        attack_type=scenario.get("attack_type", category or "pyrit"),
         vulnerability_type=vuln,
         difficulty=DifficultyLevel.MEDIUM,
-        payload=prompt[:500],
-        response=(response or "")[:2000],
+        success=success,
+        success_score=0.9 if success else 0.0,
         evidence=f"pyrit:{registry_name}",
-        severity="high" if success else "low",
+        target_model="",
+        payload_used=prompt[:500],
+        response=(response or "")[:2000],
+        reliability=0.9 if success else 0.0,
     )
