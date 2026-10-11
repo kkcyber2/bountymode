@@ -67,6 +67,17 @@ class TriageResult:
         }
 
 
+#: The lowest CVSS score that still maps to each severity band, used when an
+#: amplified finding's severity floor has to be reflected in its score.
+_FLOOR_SCORE = {
+    Severity.CRITICAL: 9.0,
+    Severity.HIGH: 7.0,
+    Severity.MEDIUM: 4.0,
+    Severity.LOW: 0.1,
+    Severity.INFO: 0.0,
+}
+
+
 class TriageScorer:
     """Rank findings by real impact."""
 
@@ -117,6 +128,18 @@ class TriageScorer:
 
         score = round(score, 1)
         severity = Severity.from_score(score)
+
+        # An amplified finding carries a severity floor.  Honour it by raising
+        # the *score* to the floor's band, so the label and the CVSS number
+        # agree -- a "critical" finding must not ship with a 3.9 score.
+        floor = getattr(finding, "severity_floor", None)
+        if floor is not None and floor.rank > severity.rank:
+            score = max(score, _FLOOR_SCORE[floor])
+            severity = floor
+            rationale.append(
+                f"severity floor {floor.value} applied by impact amplification "
+                f"(score raised to {score})"
+            )
 
         priority = 0
         if score >= self.min_score_to_submit and finding.reproducible:

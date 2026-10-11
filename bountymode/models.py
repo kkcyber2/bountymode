@@ -294,6 +294,11 @@ class Finding:
     verification_successes: int = 0
     #: ``{"ready": bool, "missing": [...], "checks": {...}}`` once assessed.
     readiness: Dict[str, Any] = field(default_factory=dict)
+    #: A severity floor set by impact amplification.  The triage scorer never
+    #: returns a severity below this, so an amplified finding's label and its
+    #: CVSS score cannot disagree (a "critical" finding with a 3.9 score is a
+    #: report a triager will reject).
+    severity_floor: Optional[Severity] = None
 
     def __post_init__(self) -> None:
         if not self.fingerprint:
@@ -311,6 +316,8 @@ class Finding:
     def from_dict(cls, data: Dict[str, Any]) -> "Finding":
         data = dict(data)
         data["severity"] = Severity(data.get("severity", "medium"))
+        if data.get("severity_floor"):
+            data["severity_floor"] = Severity(data["severity_floor"])
         data["observations"] = [Observation.from_dict(o) for o in data.get("observations", [])]
         known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in data.items() if k in known})
