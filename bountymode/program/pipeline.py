@@ -1,4 +1,4 @@
-"""The guided pipeline — one call from a program URL to a finished report.
+"""The guided pipeline -- one call from a program URL to a finished report.
 
     pipeline = GuidedPipeline()
     result = pipeline.run_from_url(
@@ -15,7 +15,7 @@ Safety properties, all enforced here rather than by convention:
 
 * the pipeline **refuses to scan** without an :class:`AuthorizationReceipt`
   naming a human approver whose recorded scope digest matches the scope in use;
-* the default is a **dry run** — ``in_process`` uses the deterministic offline
+* the default is a **dry run** -- ``in_process`` uses the deterministic offline
   model, and a live run requires an explicit ``live=True`` plus an engine URL;
 * every technique still passes through the authorization gate, so an
   out-of-scope target cannot be reached even from the pipeline;
@@ -43,9 +43,15 @@ from ..report.generator import ReportGenerator
 from ..runner.adapter import AgathonAdapter, EngineResult
 from ..runner.case_runner import CaseRunner
 from ..triage.scorer import TriageScorer
+from ..verify import (
+    GenericVerifier,
+    SimulatedTarget,
+    client_sender,
+    simulated_sender,
+)
 from .extractor import ExtractionReport
 from .importer import AuthorizationReceipt, ImportResult, ProgramImporter
-from .verifier import FindingVerifier, SubmissionReadinessChecker
+from .verifier import SubmissionReadinessChecker
 
 
 def _now_iso() -> str:
@@ -96,6 +102,11 @@ class PipelineResult:
         return sum(1 for r in self.readiness if r.get("ready"))
 
     @property
+    def verified_count(self) -> int:
+        """How many findings the verification engine actually reproduced."""
+        return sum(1 for v in self.verified if v.get("verdict") == "verified")
+
+    @property
     def ok(self) -> bool:
         return all(s.ok for s in self.stages) and bool(self.findings or self.skipped)
 
@@ -117,6 +128,7 @@ class PipelineResult:
             "stop_reason": self.stop_reason,
             "requests_made": self.requests_made,
             "ready_count": self.ready_count,
+            "verified_count": self.verified_count,
             "finding_count": len(self.findings),
             "out_dir": self.out_dir,
             "started_at": self.started_at,
@@ -215,7 +227,7 @@ class GuidedPipeline:
         if not approved_by:
             result.stages.append(StageOutcome(
                 "scope", False,
-                "no approver named — a human must confirm the parsed scope before any test",
+                "no approver named -- a human must confirm the parsed scope before any test",
             ))
             result.errors.append("authorization refused: no human approver")
             self._finish(result)
@@ -237,7 +249,7 @@ class GuidedPipeline:
             result.stages.append(StageOutcome(
                 "gate", False,
                 "no concrete testable target could be derived. In-scope entries are "
-                "wildcards or listing pages — set the asset to test explicitly.",
+                "wildcards or listing pages -- set the asset to test explicitly.",
             ))
             self._finish(result)
             return result
@@ -323,34 +335,22 @@ class GuidedPipeline:
         ))
 
         # ---- 5. verify -------------------------------------------------- #
-        verifier = FindingVerifier(attempts=attempts, readiness=self.readiness)
+        # A class-appropriate oracle replays each finding N of M times, compares
+        # the test probe against a control and a negative control, and returns
+        # an explicit verdict (verified / unverified / inconclusive).  A dry run
+        # has no live target, so verification is exercised against the simulated
+        # vulnerable target and labelled as simulated; a live run verifies
+        # through the same model client the scan used.
+        verifier = GenericVerifier(attempts=attempts)
+        sender = self._verification_sender(in_process=in_process, offline=offline)
         for finding in result.findings:
-            technique = adapter.technique(finding.technique_id)
-
-            def attempt(  # noqa: E306
-                i: int,
-                _t: Optional[Technique] = technique,
-                _f: Finding = finding,
-            ) -> EngineResult:
-                if dispatch is None:
-                    return EngineResult(
-                        technique_id=_f.technique_id, target=_f.target,
-                        success=False, errored=True,
-                        evidence="no engine configured (dry run)",
-                    )
-                if _t is None:
-                    return EngineResult(
-                        technique_id=_f.technique_id, target=_f.target,
-                        success=False, errored=True, evidence="unknown technique",
-                    )
-                return dispatch(_t, _f.target)
-
-            verification = verifier.verify(finding, attempt, vault=vault, in_scope=True)
+            verification = verifier.verify(finding, sender, vault=vault, in_scope=True)
             result.verified.append(verification.to_dict())
-            result.readiness.append(verification.readiness.to_dict())
+            result.readiness.append(dict(verification.readiness))
         result.stages.append(StageOutcome(
             "verify", True,
-            f"replayed {len(result.findings)} finding(s) {attempts}x each",
+            f"{result.verified_count} of {len(result.findings)} finding(s) verified "
+            f"({attempts} attempt(s) each)",
         ))
 
         # ---- 6. readiness ----------------------------------------------- #
@@ -468,6 +468,27 @@ class GuidedPipeline:
             for tid in ids
             if tid.lower() in permitted
         ]
+
+    @staticmethod
+    def _verification_sender(*, in_process: bool, offline: bool) -> Any:
+        """Pick the probe sender verification replays against.
+
+        A dry run has no live target, so it reuses the simulated vulnerable
+        target's probe-aware behaviour -- that is what lets a dry run exercise
+        the real oracle path end to end.  A live in-process run sends probes
+        through the configured model client.  A remote-engine run has no
+        prompt-level client, so it falls back to the simulated sender; the
+        verdict is still recorded honestly rather than assumed.
+        """
+        if not (in_process and not offline):
+            return simulated_sender(SimulatedTarget(vulnerable=True))
+        try:
+            from ..engine.llm import client_from_config
+
+            client = client_from_config()
+        except Exception:  # noqa: BLE001 - a missing client is not fatal
+            return simulated_sender(SimulatedTarget(vulnerable=True))
+        return client_sender(client)
 
     @staticmethod
     def _default_target(scope: ProgramScope) -> str:
