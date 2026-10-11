@@ -42,6 +42,11 @@ EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_BLOCKED = 3
 
+#: Em dash, kept as a constant rather than written inline inside an f-string
+#: expression: a backslash is illegal in an f-string expression part before
+#: Python 3.12, and the file stays pure ASCII this way.
+DASH = "\u2014"
+
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -113,7 +118,7 @@ def cmd_scope_import(args: argparse.Namespace) -> int:
     print(f"Imported program '{scope.program}' ({scope.platform}).")
     print(f"  in-scope assets : {len(scope.in_scope)}")
     print(f"  exclusions      : {len(scope.out_of_scope)}")
-    print(f"  prohibited      : {', '.join(scope.prohibited_techniques) or '\u2014'}")
+    print(f"  prohibited      : {', '.join(scope.prohibited_techniques) or DASH}")
     print(f"  rate limit      : {scope.rate_limit_rps:.3f} req/s, max {scope.max_requests} requests")
     print(f"  wrote           : {out}")
     if importer.warnings:
@@ -411,7 +416,8 @@ def cmd_retest(args: argparse.Namespace) -> int:
     if f is None:
         print(f"finding {args.finding_id} not found in {args.registry}", file=sys.stderr)
         return EXIT_USAGE
-    print(f"{f.id}: {'STILL REPRODUCES \u2014 escalate' if not args.fixed else 'FIXED \u2014 close'}")
+    verdict = "STILL REPRODUCES " + DASH + " escalate" if not args.fixed else "FIXED " + DASH + " close"
+    print(f"{f.id}: {verdict}")
     return EXIT_OK
 
 
@@ -540,7 +546,7 @@ def render_program_summary(payload: Dict[str, Any], source: str) -> None:
 
     print(f"\nLIMITS  : {payload['rate_limit_rps']:.3f} req/s, "
           f"max {payload['max_requests']} requests")
-    blocked = ", ".join(payload["prohibited_techniques"]) or "\u2014"
+    blocked = ", ".join(payload["prohibited_techniques"]) or DASH
     print(f"TECHNIQUES BLOCKED BY POLICY: {blocked}")
 
     if payload["rules"]:
