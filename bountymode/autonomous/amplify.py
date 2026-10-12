@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..models import Finding, Severity
-from ..upgrades.chaining import Chain, ChainNode, ChainPlanner
+from ..upgrades.chaining import ChainNode, ChainPlanner
 from ..upgrades.cross_tenant import CrossTenantProver, PrincipalResponse
 
 # --------------------------------------------------------------------------- #

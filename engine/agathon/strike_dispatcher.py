@@ -9,6 +9,7 @@ No ``assert_provider_handshake`` and no API-key prefix validation (``gsk_`` / ``
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random

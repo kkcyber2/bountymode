@@ -678,7 +678,7 @@ class FastAPIMiddlewareBuilder(BaseGuardrailBuilder):
                 import re
                 regex_pattern = re.escape(pattern)
                 for name in param_names:
-                    regex_pattern = regex_pattern.replace(f"\\{{{{{name}}}\\}}}}", f"(?P<{name}>[^/]+)")
+                    regex_pattern = regex_pattern.replace(chr(92) + chr(123) + name + chr(92) + chr(125), f"(?P<{{name}}>[^/]+)")
                 match = re.fullmatch(regex_pattern, path)
                 if not match:
                     return []

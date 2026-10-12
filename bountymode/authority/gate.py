@@ -16,8 +16,8 @@ declarative data, which is what makes it testable and auditable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, List
 
 from ..models import (
     AuthorizationDecision,

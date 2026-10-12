@@ -42,10 +42,10 @@ from ..runner.adapter import EngineResult
 from ..runner.case_runner import CaseRunner
 from ..triage.scorer import TriageScorer
 from ..verify import GenericVerifier, SimulatedTarget, client_sender, simulated_sender
-from ..program.importer import AuthorizationReceipt, ImportResult, ProgramImporter
+from ..program.importer import ProgramImporter
 from .amplify import Amplifier
 from .intake import DocumentIntake, IntakeResult
-from .planner import Planner, TestPlan
+from .planner import Planner
 
 
 def _now_iso() -> str:
