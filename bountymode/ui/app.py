@@ -717,20 +717,54 @@ def create_app() -> FastAPI:
         if req.path:
             read = DocumentIntake().read(req.path)
             if not read.ok:
-                raise HTTPException(status_code=400, detail=read.error)
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"could not read the document: {read.error}"
+                        + (f" {read.hint}" if read.hint else "")
+                    ),
+                )
             text = read.text
         elif req.text.strip():
             text = req.text
         else:
-            raise HTTPException(status_code=400, detail="supply either text or path")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "no program document was supplied: paste the program's scope "
+                    "text into the box, or choose a file."
+                ),
+            )
 
         imported = ProgramImporter().import_text(
             text, program=req.program, platform=req.platform
         )
         if not imported.ok:
+            # Say *why* nothing was parsed, and what to do about it, instead of
+            # a bare 400.  The extractor is deliberately conservative: it only
+            # records assets the program states explicitly, so a document that
+            # is prose-only (or a scanned PDF with no text layer) legitimately
+            # yields nothing -- and the operator needs to know that.
+            chars = len(text.strip())
+            hint = (
+                "The parser only records assets the program states explicitly "
+                "(a scope table, a wildcard like *.example.com, a backticked host, "
+                "or a line that names the host as a target). Add an 'In Scope' "
+                "section listing the assets, or paste the program's scope table."
+            )
+            if chars < 40:
+                hint = (
+                    "Only "
+                    f"{chars} characters of text were found -- too little to be a "
+                    "program brief. If this is a scanned PDF, run OCR first or paste "
+                    "the scope text instead."
+                )
             raise HTTPException(
                 status_code=400,
-                detail="no scope could be parsed from the document",
+                detail=(
+                    f"no scope could be parsed from the document ({chars} characters "
+                    f"read). {hint}"
+                ),
             )
         plan = Planner().plan(imported.scope)
         return {

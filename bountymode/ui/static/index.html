@@ -468,7 +468,15 @@ async function api(path, body, method){
   });
   const t = await r.text();
   let d; try { d = JSON.parse(t); } catch(e){ d = {raw:t}; }
-  if(!r.ok) throw new Error(d.detail || d.raw || ('HTTP '+r.status));
+  if(!r.ok){
+    // FastAPI returns a string for our own HTTPExceptions but an array of
+    // objects for a 422 validation error.  Render both readably instead of
+    // showing "[object Object]".
+    let msg = d.detail;
+    if(Array.isArray(msg)) msg = msg.map(x => (x.loc ? x.loc.join('.')+': ' : '') + (x.msg || JSON.stringify(x))).join('; ');
+    if(msg && typeof msg === 'object') msg = JSON.stringify(msg);
+    throw new Error(msg || d.raw || ('HTTP '+r.status));
+  }
   return d;
 }
 function show(el, obj){ el.style.display='block'; el.textContent = JSON.stringify(obj, null, 2); }
@@ -736,19 +744,33 @@ async function readAutoDoc(){
   // Prefer the dropped file; fall back to the pasted text.
   const f = $('a-file').files && $('a-file').files[0];
   if(f){
+    // A PDF is binary: reading it as text yields mojibake that parses to
+    // nothing.  The backend reads PDFs properly, so hand it the file's path
+    // when the browser exposes one; otherwise tell the user to paste.
+    const isPdf = /\.pdf$/i.test(f.name) || f.type === 'application/pdf';
+    if(isPdf){
+      const p = (f.path || '').trim();
+      if(p) return {text: '', path: p, name: f.name};
+      return {text: '', path: '', name: f.name,
+        error: 'This browser does not expose the file path, so a PDF cannot be sent. '
+             + 'Paste the program text into Step 1b instead, or run the CLI: '
+             + 'bountymode auto plan ' + f.name};
+    }
     const text = await f.text();
-    return {text: text, name: f.name};
+    return {text: text, path: '', name: f.name};
   }
-  return {text: $('a-text').value, name: ''};
+  return {text: $('a-text').value, path: '', name: ''};
 }
 
 async function doAutoPlan(){
   const doc = await readAutoDoc();
-  if(!doc.text.trim()){ $('a-plan').innerHTML='<div class="note err">Choose a file or paste the program details first.</div>'; return; }
+  if(doc.error){ $('a-plan').innerHTML='<div class="note err">'+esc(doc.error)+'</div>'; return; }
+  if(!doc.text.trim() && !doc.path){ $('a-plan').innerHTML='<div class="note err">Choose a file or paste the program details first.</div>'; return; }
   $('a-plan').innerHTML = '<div class="note">Reading the document and planning\u2026</div>';
   try{
     const d = await api('/api/auto/plan', {
       text: doc.text,
+      path: doc.path || '',
       program: $('a-program').value.trim() || null,
       platform: $('a-platform').value.trim() || null
     }, 'POST');
@@ -778,7 +800,8 @@ async function doAutoPlan(){
 
 async function doAutoRun(){
   const doc = await readAutoDoc();
-  if(!doc.text.trim()){ $('a-result').innerHTML='<div class="note err">Choose a file or paste the program details first.</div>'; return; }
+  if(doc.error){ $('a-result').innerHTML='<div class="note err">'+esc(doc.error)+'</div>'; return; }
+  if(!doc.text.trim() && !doc.path){ $('a-result').innerHTML='<div class="note err">Choose a file or paste the program details first.</div>'; return; }
   if(!$('a-confirm').checked){ $('a-result').innerHTML='<div class="note err">Tick the confirmation box to confirm you are authorized to test these assets.</div>'; return; }
   const approver = $('a-approver').value.trim();
   if(!approver){ $('a-result').innerHTML='<div class="note err">Enter your name \u2014 a run must record who authorized it.</div>'; return; }
@@ -790,6 +813,7 @@ async function doAutoRun(){
   try{
     const d = await api('/api/auto/run', {
       text: doc.text,
+      path: doc.path || '',
       approved_by: approver,
       target: $('a-target').value.trim(),
       verify_attempts: parseInt($('a-attempts').value) || 5,

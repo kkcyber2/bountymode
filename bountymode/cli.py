@@ -756,7 +756,18 @@ def cmd_auto_plan(args: argparse.Namespace) -> int:
         read.text, program=args.program, platform=args.platform
     )
     if not imported.ok:
-        print("error: no scope could be parsed from the document", file=sys.stderr)
+        print(
+            "error: no scope could be parsed from the document "
+            f"({len(read.text.strip())} characters read).",
+            file=sys.stderr,
+        )
+        print(
+            "The parser only records assets the program states explicitly (a scope "
+            "table, a wildcard like *.example.com, a backticked host, or a line that "
+            "names the host as a target). Add an 'In Scope' section listing the "
+            "assets, or paste the program's scope table.",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     plan = Planner().plan(imported.scope)
     _print(plan.to_dict())

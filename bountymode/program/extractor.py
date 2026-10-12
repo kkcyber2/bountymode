@@ -38,15 +38,48 @@ _URL_RE = re.compile(r"https?://[^\s)|\"'`,;\]]+", re.I)
 _WILDCARD_RE = re.compile(r"\*\.(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b", re.I)
 _HOST_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b", re.I)
 
+#: An in-scope heading.  Real program pages write this many ways: "In Scope",
+#: "In-scope targets", "## 2. Scope", "Scope of this program".  A bare "Scope"
+#: heading counts, but only when it is not the out-of-scope heading -- the
+#: negative lookahead keeps "Out of scope" and "Scope exclusions" out.
 _IN_HEAD = re.compile(
-    r"^\s*(?:#{1,6}\s*)?in[\s-]?scope(?:\s*(?:targets?|assets?|hosts?|domains?))?\b.*$",
-    re.I | re.M,
-)
-_OUT_HEAD = re.compile(
-    r"^\s*(?:#{1,6}\s*)?out[\s-]?(?:of[\s-]?)?scope"
+    r"^\s*(?:#{1,6}\s*)?(?:\d+[.)]\s*)?(?!out\b)(?:in[\s-]?scope|scope)\b"
     r"(?:\s*(?:targets?|assets?|hosts?|domains?|items?))?\b.*$",
     re.I | re.M,
 )
+_OUT_HEAD = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:\d+[.)]\s*)?out[\s-]?(?:of[\s-]?)?scope"
+    r"(?:\s*(?:targets?|assets?|hosts?|domains?|items?))?\b.*$",
+    re.I | re.M,
+)
+
+#: A line that explicitly presents what follows as a target, e.g.
+#: ``**Target row:** `*.openai.com` `` or ``In scope: api.example.com``.
+_TARGET_MARKER_RE = re.compile(
+    r"\b(?:target(?:s)?\s*(?:row|rows|host|hosts|asset|assets)?|in[\s-]?scope|"
+    r"scope\s*(?:targets?|assets?|hosts?))\b\s*[:\-]",
+    re.I,
+)
+
+#: A backtick-quoted token, which program pages use to set a host apart from
+#: surrounding prose.
+_BACKTICK_RE = re.compile(r"`([^`\n]{1,200})`")
+
+#: A bullet or numbered list item.
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+\u2022]|\d+[.)])\s+(.*)$")
+
+#: File extensions that are never a testable host, even when backticked.
+_NON_HOST_SUFFIXES = (
+    ".json", ".md", ".py", ".js", ".ts", ".txt", ".png", ".svg", ".jpg",
+    ".yaml", ".yml", ".xml", ".html", ".css", ".pdf", ".csv", ".sh",
+)
+
+#: Hosts that are documentation, not a target: the bounty platform itself, the
+#: researcher's own test-mailbox domain, and the program's own policy pages.
+_NON_TARGET_HOSTS = {
+    "bugcrowd.com", "hackerone.com", "intigriti.com", "yeswehack.com",
+    "synack.com", "hackenproof.com", "bugcrowdninja.com",
+}
 _ANY_HEAD = re.compile(r"^\s*#{1,6}\s+.*$", re.M)
 
 _REWARD_LINE = re.compile(r"^\s*P([1-5])\s*\|\s*\$?([\d,]+)\s*$", re.I | re.M)
@@ -227,13 +260,37 @@ class ProgramExtractor:
                     continue
                 in_scope.append(ScopeTarget(pattern=target, kind=_kind_of(target, declared)))
 
-        # Prose wildcards only — never bare hosts from prose.
+        # Explicit statements only -- never bare hosts from ordinary prose.
+        # A program page states its assets in one of three explicit ways: a
+        # wildcard, a backtick-quoted host, or a line that names the host as a
+        # target ("Target row: `*.openai.com`").  Anything else is left out,
+        # because a wrongly-included target is an unauthorized test.
         if not in_scope:
-            for wildcard in _WILDCARD_RE.findall(in_block or ""):
-                key = wildcard.lower()
+            for target in _explicit_targets(in_block):
+                key = target.lower()
                 if key not in seen:
                     seen.add(key)
-                    in_scope.append(ScopeTarget(pattern=key, kind="web"))
+                    in_scope.append(ScopeTarget(pattern=key, kind=_kind_of(key)))
+
+        # No in-scope heading at all (a pasted brief often has none): fall back
+        # to explicit target statements anywhere outside the out-of-scope
+        # section, plus any scope table.  Exclusions still win, so this cannot
+        # authorize an excluded host.
+        if not in_scope:
+            haystack = _remove_sections(text, _OUT_HEAD, _IN_HEAD)
+            for target in _explicit_targets(haystack):
+                key = target.lower()
+                if key not in seen:
+                    seen.add(key)
+                    in_scope.append(ScopeTarget(pattern=key, kind=_kind_of(key)))
+        if not in_scope:
+            for row in _table_rows(text):
+                for target in _targets_from_row(row):
+                    key = target.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    in_scope.append(ScopeTarget(pattern=key, kind=_kind_of(key)))
 
         out_of_scope = _out_of_scope_rules(out_block)
 
@@ -441,16 +498,45 @@ class ProgramExtractor:
 # module helpers
 # --------------------------------------------------------------------------- #
 
+def _section_spans(text: str, head: re.Pattern, other: re.Pattern) -> List[Tuple[int, int]]:
+    """Return the ``(start, end)`` span of every section whose heading matches.
+
+    A real program page often states its scope in more than one place -- a
+    summary table near the top and a full list further down.  Taking only the
+    first match silently drops the rest, so all matches are collected.  Each
+    section runs to the next heading of any kind (or to the competing heading),
+    which keeps a section from swallowing the whole document.
+    """
+    spans: List[Tuple[int, int]] = []
+    for m in head.finditer(text):
+        rest = text[m.end():]
+        nxt = other.search(rest)
+        nxt_any = _ANY_HEAD.search(rest)
+        stops = [s.start() for s in (nxt, nxt_any) if s]
+        end = m.end() + (min(stops) if stops else len(rest))
+        spans.append((m.start(), end))
+    return spans
+
+
 def _slice_section(text: str, head: re.Pattern, other: re.Pattern) -> str:
-    m = head.search(text)
-    if not m:
-        return ""
-    rest = text[m.end():]
-    nxt = other.search(rest)
-    if nxt:
-        return rest[: nxt.start()]
-    nxt_any = _ANY_HEAD.search(rest)
-    return rest[: nxt_any.start()] if nxt_any else rest
+    """Concatenate the text of every section whose heading matches ``head``."""
+    return "\n".join(text[s:e] for s, e in _section_spans(text, head, other))
+
+
+def _remove_sections(text: str, head: re.Pattern, other: re.Pattern) -> str:
+    """Blank out every section whose heading matches ``head``.
+
+    Used to build a haystack that cannot see the out-of-scope section, so a
+    host mentioned only as an exclusion can never be harvested as a target.
+    Blanking by span (rather than a string replace) matters because the matched
+    sections are not contiguous in the original text.
+    """
+    chars = list(text)
+    for start, end in _section_spans(text, head, other):
+        for i in range(start, min(end, len(chars))):
+            if chars[i] != "\n":
+                chars[i] = " "
+    return "".join(chars)
 
 
 def _table_rows(block: str) -> List[List[str]]:
@@ -482,11 +568,83 @@ def _targets_from_row(row: List[str]) -> List[str]:
     if not out:
         for host in _HOST_RE.findall(blob):
             h = host.lower().strip(".")
-            if h.endswith((".md", ".py", ".js", ".json", ".txt", ".png", ".svg")):
+            if not _is_testable_host(h):
                 continue
             if h not in out:
                 out.append(h)
     return out
+
+
+def _explicit_targets(block: str) -> List[str]:
+    """Harvest assets a program states *explicitly*, never from bare prose.
+
+    Three explicit forms are recognised, in order of trust:
+
+    1. a wildcard (``*.example.com``) -- unambiguous;
+    2. a backtick-quoted host (`` `api.example.com` ``) -- the page set it apart
+       from the sentence on purpose;
+    3. a host on a line that names it as a target (``Target row: api.example.com``).
+
+    A host that merely appears inside a sentence is *not* harvested: including a
+    target the program never listed would be an unauthorized test.
+    """
+    out: List[str] = []
+    seen: set = set()
+
+    def add(value: str) -> None:
+        value = (value or "").strip().strip(".,;:()[]<>\"'")
+        if not value:
+            return
+        if not _is_testable_host(value):
+            return
+        key = value.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(value)
+
+    for line in (block or "").splitlines():
+        for wildcard in _WILDCARD_RE.findall(line):
+            add(wildcard.lower())
+
+        for token in _BACKTICK_RE.findall(line):
+            for host in _HOST_RE.findall(token):
+                add(host.lower())
+
+        if _TARGET_MARKER_RE.search(line):
+            for host in _HOST_RE.findall(line):
+                add(host.lower())
+
+        # A line that is *only* a host -- with or without a bullet, and with
+        # optional markdown emphasis -- is a target statement.  This is how a
+        # pasted scope list ("- api.example.com") and a heading followed by a
+        # bare host list both read.
+        item = _LIST_ITEM_RE.match(line)
+        content = item.group(1) if item else line
+        content = content.strip().strip("*_` ").strip()
+        if content and _HOST_RE.fullmatch(content):
+            add(content.lower())
+
+    return out
+
+
+def _is_testable_host(value: str) -> bool:
+    """Is this token plausibly a host a program would authorize testing?
+
+    Rejects file names (``ai-plugin.json``), the bounty platform's own hosts,
+    and the researcher's test-mailbox domain -- none of which are targets, and
+    all of which a naive host regex happily picks up out of prose.
+    """
+    host = _host_of(value)
+    if not host or "." not in host:
+        return False
+    if host.endswith(_NON_HOST_SUFFIXES):
+        return False
+    if host in _NON_TARGET_HOSTS:
+        return False
+    if any(host.endswith("." + h) for h in _NON_TARGET_HOSTS):
+        return False
+    return True
 
 
 def _host_of(target: str) -> str:
@@ -631,7 +789,18 @@ def _out_of_scope_rules(block: str) -> List[OutOfScopeRule]:
             rules.append(OutOfScopeRule(pattern=h, reason="listed as out of scope"))
         if re.search(r"\bout of scope\b|\bnot (?:eligible|rewarded|in scope)\b|\bexcluded\b", line, re.I):
             cleaned = " ".join(line.split())
-            if len(cleaned) > 20 and cleaned not in seen:
+            # Skip the section's own lead-in ("The following are out of scope:")
+            # and the heading itself -- they are not rules, and recording them
+            # as patterns produces junk exclusions.
+            is_lead_in = cleaned.rstrip(":").lower() in {
+                "the following are out of scope",
+                "the following is out of scope",
+                "out of scope",
+                "out-of-scope",
+                "not eligible",
+                "excluded",
+            } or (cleaned.endswith(":") and not _HOST_RE.search(cleaned))
+            if len(cleaned) > 20 and cleaned not in seen and not is_lead_in:
                 seen.add(cleaned)
                 rules.append(OutOfScopeRule(pattern=cleaned, reason="program prose", kind="technique"))
 
