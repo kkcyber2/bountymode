@@ -22,12 +22,12 @@ from .extractor import ExtractedProgram, ExtractionReport, ProgramExtractor
 from .fetcher import FetchResult, ProgramFetcher, normalise_pasted, snapshot_to_text
 from .importer import AuthorizationReceipt, ImportResult, ProgramImporter, scope_hash
 from .pipeline import GuidedPipeline, PipelineResult, StageOutcome
-from .verifier import (
+from ..verify import (
     FindingVerifier,
     ReadinessCheck,
     SubmissionReadiness,
     SubmissionReadinessChecker,
-    VerificationResult,
+    VerificationReport,
 )
 from .watch import ProgramWatcher, WatchRun, WatchState
 
@@ -47,7 +47,7 @@ __all__ = [
     "PipelineResult",
     "StageOutcome",
     "FindingVerifier",
-    "VerificationResult",
+    "VerificationReport",
     "SubmissionReadiness",
     "SubmissionReadinessChecker",
     "ReadinessCheck",

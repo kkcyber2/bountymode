@@ -27,6 +27,7 @@ fail-closed attack tiers and the sandbox runner.
 ## Table of contents
 
 - [What it is](#what-it-is)
+- [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [The engine (vendored, in-process)](#the-engine-vendored-in-process)
@@ -40,6 +41,8 @@ fail-closed attack tiers and the sandbox runner.
 - [CLI reference](#cli-reference)
 - [Configuration](#configuration)
 - [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Honest limitations](#honest-limitations)
 - [Legal & authorization](#legal--authorization)
 - [License](#license)
 
@@ -66,30 +69,59 @@ structurally impossible:
 
 ---
 
+## Prerequisites
+
+| Requirement | Detail |
+|---|---|
+| **Python** | **3.9 or newer**. CI runs 3.9, 3.10, 3.11 and 3.12; development and the documented runs use 3.11. |
+| **pip** | a current `pip`. Run `python -m pip install --upgrade pip` first. |
+| **OS** | Linux, macOS, or Windows via **WSL**. The headless-browser fallback and parts of the engine assume a POSIX shell, so native Windows is not supported. |
+| **Git** | to clone the repository. |
+| **Disk** | roughly 150 MB for the checkout plus the virtualenv. |
+
+**System packages — optional, only for specific features.** None are needed for
+the quickstart, the test suite, or an offline (dry) run. The core workflow layer
+has **zero runtime dependencies** and runs on the standard library alone.
+
+| Feature | Needs | Debian / Ubuntu | macOS (Homebrew) |
+|---|---|---|---|
+| Reading a PDF program brief (`auto run brief.pdf`) | a PDF text extractor | `pypdf` ships in the `all` extra and handles most PDFs; `sudo apt install poppler-utils` adds `pdftotext` as a fallback | `brew install poppler` |
+| Fetching a JavaScript-rendered program page | a headless browser | `python -m playwright install chromium` (optional path) | same |
+| OCR of a scanned (image-only) PDF | `tesseract` | `sudo apt install tesseract-ocr` | `brew install tesseract` |
+
+---
+
 ## Install
 
-Requires **Python 3.9+**. The core has **zero runtime dependencies**.
-
 ```bash
+# 1. clone
 git clone https://github.com/kkcyber2/bountymode
 cd bountymode
 
-# core only -- the workflow layer has zero runtime dependencies
-pip install -e .
+# 2. create and activate a virtualenv
+python -m venv .venv
+source .venv/bin/activate          # Windows/WSL: .venv\Scripts\activate
 
-# the engine needs its own deps; add the UI and the test suite too
+# 3. install a full checkout -- engine, UI and tests
+python -m pip install --upgrade pip
 pip install -e ".[all]"
+
+# 4. verify the install
+bountymode --help                  # the CLI responds
+bountymode models                  # prints the effective model configuration
+python -m pytest -q                # expected: 364 passed
 ```
 
-Optional extras:
+**Install only what you need.** Each extra is additive, and `pip install -e .`
+alone installs the dependency-free workflow layer:
 
-| Extra | Adds | Needed for |
-|---|---|---|
-| `yaml` | `PyYAML` | YAML scope / case files |
-| `ui` | `fastapi`, `uvicorn` | the local web UI |
-| `engine` | `requests`, `httpx`, `pydantic`, `tenacity`, `beautifulsoup4`, `numpy`, `pillow`, … | running the vendored engine in-process |
-| `dev` | `pytest`, plus the UI and engine extras | running the tests |
-| `all` | everything above | a full checkout |
+| Extra | Command | Adds | Needed for |
+|---|---|---|---|
+| `yaml` | `pip install -e ".[yaml]"` | `PyYAML` | YAML scope / case files |
+| `ui` | `pip install -e ".[ui]"` | `fastapi`, `uvicorn` | the local web UI |
+| `engine` | `pip install -e ".[engine]"` | `requests`, `httpx`, `pydantic`, `tenacity`, `beautifulsoup4`, `numpy`, `pillow`, … | running the vendored engine in-process |
+| `dev` | `pip install -e ".[dev]"` | `pytest`, plus the UI and engine extras | running the tests |
+| `all` | `pip install -e ".[all]"` | everything above | a full checkout |
 
 ---
 
@@ -465,12 +497,25 @@ The result panel shows every stage, what the gate skipped and why, each finding
 with its CVSS score and a READY / NOT READY badge, and the exact checks a
 NOT READY finding is missing.
 
-The UI also exposes the step-by-step workflow (import scope → check
-authorization → run → findings → triage → report → dedupe/retest), plus a panel
-for every upgrade module, the model configuration and the engine catalogue.
-Runs are **dry by default**; `--in-process` drives the vendored engine locally,
-and a `--live` run requires an engine URL. Everything still passes through the
-gate and the stop-conditions.
+The UI also exposes the step-by-step workflow, plus a panel per module. Its
+tabs and controls:
+
+| Control | Does |
+|---|---|
+| **Guided run** (tab) | paste a program URL or scope text → *Parse & review scope* → confirm → *Run*; the whole seven-stage pipeline |
+| **One input (autonomous)** (tab) | one document in → *Read & plan* (no testing) → confirm → *Run the whole job* |
+| **Import scope** | import a policy file or URL into a `scope.json` |
+| **Check** | dry-run the authorization gate against a target |
+| **Run case** | run one case — dry by default, or in-process / live |
+| **Refresh findings** | list the findings from the last run |
+| **Generate reports** | render HackerOne / Bugcrowd reports |
+| **Record retest** | record a regression retest against the dedupe registry |
+| Module panels | **Judge** (LLM-as-judge), **Prove** (cross-tenant), **Audit** (tool use), **Scan** (supply chain), **Fuzz**, **Plan** (chains), **Run** (crescendo), **Minimise**, **Run suite** (regression), **Build carriers** (multimodal), **Replay** (reproducibility) |
+| **Model configuration** / **Engine catalogue** | inspect the models and the technique catalogue |
+
+Runs are **dry by default**; *in-process* drives the vendored engine locally, and
+a *live* run requires an engine URL. Everything still passes through the gate and
+the stop-conditions.
 
 ---
 
@@ -499,7 +544,7 @@ gate and the stop-conditions.
    │ Stop-Condition   │◄──────►│  Evidence Vault  │
    │ Engine (budgets, │        │  (redact → hash  │
    │  kill switch)    │        │   → chain)       │
-   └──────────────────┘        └──────────────────┘
+   └─────────────────┘        └──────────────────┘
                                          │
                                          ▼
                               ┌────────────────────┐
@@ -535,9 +580,21 @@ bountymode/
 ├── dedupe/              registry.py (de-duplication + regression retest)
 ├── runner/              adapter.py (engine bridge) + case_runner.py (orchestration)
 ├── domains/             base.py (DomainAdapter protocol) + 4 built-in adapters
+├── program/            program onboarding: fetch → extract → import → pipeline → watch
+├── verify/              generic verification: oracles, N-of-M replay, readiness checks
+├── autonomous/          one-input mode: intake, planner, amplifier, runner
 ├── upgrades/            U1–U13 quality modules
 └── ui/                  FastAPI app + single-page frontend
 ```
+
+| Path | What lives there |
+|---|---|
+| `bountymode/` | the workflow layer — CLI, gate, evidence, triage, report, verification, UI |
+| `engine/` | the vendored offensive engine (its real source; driven in-process). `engine/tests/` is the engine's own suite |
+| `tests/` | the project's test suite — the one `pytest` collects |
+| `tools/` | runnable helpers: `auto_example.py` (the one-input worked example), `verify_example.py` (live verification against a local mock), `vulnerable_target.py` (a deliberately vulnerable local target on port 9099) |
+| `examples/` | sample policies, scopes, findings and the offline demo |
+| `.github/workflows/` | CI (`ci.yml`) and the one-shot engine vendor (`bootstrap.yml`) |
 
 ---
 
@@ -690,31 +747,133 @@ Engine connection, models and run defaults:
 | `--engine URL` | base URL of a remote engine (with `--live`) |
 | `--token TOKEN` | internal scan token (never hard-code; pass via env) |
 
-See [Models & providers](#models--providers) for the environment variables.
+### Every environment variable
+
+Precedence is **CLI flag → environment variable → config file → built-in
+default**. Set these in your shell, or in an untracked `.env`; `.env`, `*.key`
+and `*.pem` are in `.gitignore`.
+
+| Variable | Required? | What it does | Default |
+|---|---|---|---|
+| `BOUNTYMODE_LLM_API_KEY` | optional | model key; checked **first** | *(unset)* |
+| `OPENROUTER_API_KEY` | optional | OpenRouter key — enables the free default model | *(unset — offline)* |
+| `GROQ_API_KEY` | optional | Groq key (also selects the Groq base URL and model) | *(unset)* |
+| `OPENAI_API_KEY` | optional | OpenAI key (also selects the OpenAI base URL and model) | *(unset)* |
+| `ANTHROPIC_API_KEY` | optional | read by the vendored engine's config | *(unset)* |
+| `GEMINI_API_KEY` | optional | read by the vendored engine's config | *(unset)* |
+| `BOUNTYMODE_MODEL` | optional | preferred model id | `nvidia/nemotron-3-super-120b-a12b:free` |
+| `BOUNTYMODE_LLM_MODEL` | optional | alias for the model id | *(unset)* |
+| `BOUNTYMODE_LLM_BASE_URL` | optional | OpenAI-compatible base URL | provider-dependent |
+| `BOUNTYMODE_ENGINE_MODEL` | optional | model the engine uses | follows the model |
+| `BOUNTYMODE_ENGINE_INTENSITY` | optional | engine tier: `recon` / `standard` / `aggressive` / `greasy` | `standard` |
+| `BOUNTYMODE_ENGINE_PATH` | optional | where `engine/` lives | `./engine` |
+| `BOUNTYMODE_ENGINE_TOKEN` | optional | bearer token for the local engine HTTP facade | *(unset — the facade refuses to start)* |
+| `BOUNTYMODE_OFFLINE` | optional | `1` forces offline mode globally | *(off)* |
+| `BOUNTYMODE_CONFIG` | optional | path to a JSON config file | `./bountymode.json` |
+| `INTERNAL_SCAN_TOKEN` | optional | token for a **remote** engine (`--live --engine URL`) | *(unset)* |
+| `LOG_LEVEL` | optional | engine log level | `INFO` |
+| `VERIFY_TARGET_URL` | optional | target used by `tools/verify_example.py` | *(unset)* |
+
+No variable is *required*: with none set, every offline path works and only live
+model calls are disabled.
+
+**Engine-internal variables** — set only when driving the vendored engine's own
+HTTP facade or its swarm path. Not needed for a normal run:
+`AGATHON_SWARM`, `AGATHON_MAX_BRAIN_TURNS`, `AGATHON_MAX_BRAIN_TURNS_FREE`,
+`AGATHON_MAX_NO_TOOL_NUDGES`, `AGATHON_RATE_LIMIT_BREAKER`, `AGATHON_LOG_LEVEL`,
+`AGATHON_INTERNAL_SECRET`, `AGATHON_WEBHOOK_SECRET`,
+`AGATHON_WEBHOOK_CALLBACK_URL`, `AGATHON_DOCKER_IMAGE`,
+`AGATHON_GREASY_AUTOAPPROVE`, `GROQ_BRAIN_MODEL`, `OPENROUTER_BRAIN_MODEL`,
+`REDTEAM_MAX_TOKENS`, `MAX_SOLDIER_TOKENS`, `FORGEGUARD_BLOCK_ON_SECRET`,
+`FORGEGUARD_LOG_PAYLOADS`, `FORGEGUARD_ENGAGEMENT_TOKEN`,
+`FORGEGUARD_ORG_SECRET`, `CONTEXT_HMAC_KEY`, `TARGET_URL`, `SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY`.
+
+> **Never commit a key.** Pass secrets through the environment. The tree is
+> scanned; the only `sk-` / `ghp_` strings in it are the tool's *own detection
+> patterns* and obvious `EXAMPLE` / `SIMULATED` fixtures.
+
+See [Models & providers](#models--providers) for the model-specific detail.
 
 ---
 
 ## Testing
 
 ```bash
-pip install -e ".[dev]"
-python -m pytest -q
+pip install -e ".[dev]"        # or ".[all]" to include the engine extras
+python -m pytest -q            # expected: 364 passed
 ```
 
-The suite covers the scope matcher, the authorization gate, stop-conditions,
-the redactor and vault, the CVSS calculator, the report generator, the case
-runner, all four domains, all thirteen upgrade modules, every UI endpoint, the
-program importer (including the property that it never invents scope), the
-guided pipeline end to end, and the in-process engine integration (catalogue,
-dispatch, configuration).
+The suite covers the scope matcher, the authorization gate, stop-conditions, the
+redactor and vault, the CVSS calculator, the report generator, the case runner,
+all four domains, all thirteen upgrade modules, every UI endpoint, the program
+importer (including the property that it never invents scope), the generic
+verification engine (oracle selection, the negative control, N-of-M counting),
+submission readiness, the guided pipeline end to end, and the in-process engine
+integration (catalogue, dispatch, configuration).
 
-Two of those suites exist because a full pipeline run surfaced real defects that
-the unit tests had not: `tests/test_engine_dispatch.py` now asserts that *every*
-registered engine technique is callable — a tester whose second parameter is an
-attack payload rather than an intensity level was being called with the wrong
-argument and raising `TypeError` — and the pipeline suite asserts that an
-unimplemented technique is *skipped* rather than counted as an error, since the
-error breaker would otherwise abort the scan after three of them.
+Some of those suites exist because a full pipeline run surfaced real defects the
+unit tests had not:
+
+- `tests/test_engine_integration.py` asserts that *every* registered engine
+  technique is callable — a tester whose second parameter is an attack payload
+  rather than an intensity level was being called with the wrong argument and
+  raising `TypeError`.
+- The pipeline suite asserts that an unimplemented technique is *skipped* rather
+  than counted as an error, since the error breaker would otherwise abort the
+  scan after three of them.
+- `tests/test_consolidation.py` asserts that the verification engine and the
+  readiness checker exist in **one** place, so the duplicate implementation that
+  used to live under `bountymode/program/` cannot come back.
+
+> **Two test suites, not one.** `pytest` is configured with
+> `testpaths = ["tests"]`, so the engine's own suite under `engine/tests/` is
+> **not** collected by a bare `python -m pytest` in the repository root. It needs
+> the engine on `sys.path`; run it with `cd engine && python -m pytest tests -q`.
+> A green root run therefore does not by itself cover the engine's own tests.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError: No module named 'fastapi'` when starting the UI | the `ui` extra is not installed | `pip install -e ".[ui]"` |
+| `No module named 'bountymode'` | not installed, or the venv is not active | activate the venv, then `pip install -e .` |
+| `pdftotext: command not found` while reading a PDF | no system PDF extractor | `pip install -e ".[all]"` (brings `pypdf`), or `sudo apt install poppler-utils` |
+| A PDF reports "no text layer" | it is images rather than text | run OCR (`tesseract`), or paste the text with `program import --text` |
+| `models --check` → `HTTP 401` | the key is missing, a placeholder, or wrong | export a real key, or work offline (no key is not an error) |
+| `models --check` → `HTTP 429` / `502` | free-tier rate limit upstream | wait and retry, or point elsewhere with `BOUNTYMODE_LLM_BASE_URL` |
+| The gate denies every technique | the target is out of scope | re-check the scope; exclusions always win and there is no override flag |
+| "authorization receipt is pending" / digest mismatch | the scope was edited after approval, or never approved | re-approve with `--approve-by` |
+| `git push` rejected | no push access to this repository | fork it, or push to your own remote |
+| Tests fail on a fresh clone | a dependency belongs to an extra you did not install | `pip install -e ".[all]"` before `pytest` |
+
+---
+
+## Honest limitations
+
+Stated plainly rather than buried:
+
+- **A dry run's verification verdict is simulated.** With no live target,
+  verification runs against the in-process simulated target, which is vulnerable
+  to everything, so it reports VERIFIED. Only a *live* run's verdict is a real
+  measurement.
+- **"Verified" means reproducible and evidenced — not confirmed.** Final
+  confirmation of a real vulnerability is the bounty program's job. The tool's
+  job is to prove reproducibility and impact with evidence, and to say so when it
+  cannot.
+- **Not every step is fully autonomous, by design.** A human supplies the
+  approver's name, a human confirms the parsed scope, and nothing is ever
+  submitted to a platform. A plan may name several assets; one run tests the
+  highest-priority one and records the rest.
+- **Oracle coverage is per class.** A class with no dedicated oracle falls back
+  to a generic differential check, which is deliberately weak and returns
+  INCONCLUSIVE when its baselines disagree.
+- **The engine's own test suite is outside the default `pytest` run**
+  (`engine/tests/`, see [Testing](#testing)).
+- **No API key is not an error.** Every offline path keeps working; only live
+  model calls are disabled.
 
 ---
 

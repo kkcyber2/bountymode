@@ -46,12 +46,12 @@ from ..triage.scorer import TriageScorer
 from ..verify import (
     GenericVerifier,
     SimulatedTarget,
+    SubmissionReadinessChecker,
     client_sender,
     simulated_sender,
 )
 from .extractor import ExtractionReport
 from .importer import AuthorizationReceipt, ImportResult, ProgramImporter
-from .verifier import SubmissionReadinessChecker
 
 
 def _now_iso() -> str:

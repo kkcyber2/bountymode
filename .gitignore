@@ -15,8 +15,15 @@ env/
 # --- Test / coverage ---
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 .tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+*.cover
+*.py,cover
 
 # --- Bounty Mode run artifacts (may contain redacted evidence) ---
 bounty-run/
@@ -26,6 +33,25 @@ reports/
 registry.json
 *-scope.json
 evidence/
+run-*/
+watch-state.json
+submission-bundle.json
+program-profile.json
+authorization.json
+pipeline-result.json
+case-result.json
+scope.json
+
+# --- Generated documents / scratch the tool writes on a run ---
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+*.rej
+*.swp
 
 # --- Secrets: never commit these ---
 .env
@@ -34,6 +60,8 @@ evidence/
 *.key
 secrets.json
 credentials.json
+*.p12
+*.pfx
 
 # --- Engine runtime artifacts (written to the CWD on a run) ---
 /redteam.log
@@ -42,8 +70,14 @@ credentials.json
 # --- Editors / OS ---
 .vscode/
 .idea/
+*.code-workspace
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 Thumbs.db
+desktop.ini
 
 # local live-validation scratch
 live-test/run-*/
