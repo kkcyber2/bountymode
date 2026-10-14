@@ -18,8 +18,10 @@ Run it with::
     python -m bountymode.engine.server --port 8088
 
 It is a single-operator local tool: it binds to ``127.0.0.1`` by default, adds
-no dependency, and refuses to start without an access token unless
-``--no-auth`` is passed explicitly.
+no dependency, and **requires a bearer token by default** -- an ephemeral one is
+generated per process unless ``--token``/``$BOUNTYMODE_ENGINE_TOKEN`` supplies
+one, and ``--no-auth`` (loopback only) is the explicit opt-out.  Cross-origin
+browser requests are refused outright.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import argparse
 import json
 import logging
 import os
+import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple
 
@@ -39,6 +42,15 @@ from .paths import engine_available
 log = logging.getLogger(__name__)
 
 TOKEN_ENV = "BOUNTYMODE_ENGINE_TOKEN"
+
+#: Hosts treated as loopback for the CORS / bind checks.
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def generate_token() -> str:
+    """A fresh, unguessable bearer token for one server process."""
+    return secrets.token_urlsafe(32)
+
 
 #: Shared state for the handler; one engine instance per process.
 _STATE: Dict[str, Any] = {"engine": None, "token": ""}
@@ -65,10 +77,49 @@ class EngineRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(body)
 
+    def _cors_origin(self) -> str:
+        """Echo the ``Origin`` header only when it is a loopback origin.
+
+        The fa\u00e7ade is a local tool: a browser tab on another site must not be
+        able to read its responses.  Combined with the bearer-token requirement
+        this closes the cross-origin read path.
+        """
+        origin = (self.headers.get("Origin") or "").strip()
+        if not origin:
+            return ""
+        from urllib.parse import urlparse
+
+        host = (urlparse(origin).hostname or "").lower()
+        return origin if host in _LOOPBACK_HOSTS else ""
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        """Answer a CORS preflight without touching the engine."""
+        self.send_response(204)
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, X-Internal-Scan-Token",
+        )
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _authorised(self) -> bool:
+        # A cross-origin browser request is never authorised, even with a valid
+        # token, so another tab cannot drive the local engine.
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and not self._cors_origin():
+            return False
         required = _STATE["token"]
         if not required:
             return True
@@ -164,12 +215,21 @@ class EngineRequestHandler(BaseHTTPRequestHandler):
         })
 
 
-def serve(host: str = "127.0.0.1", port: int = 8088, token: str = "") -> None:
-    """Start the engine HTTP façade (blocking)."""
+def serve(host: str = "127.0.0.1", port: int = 8088, token: Optional[str] = None) -> None:
+    """Start the engine HTTP façade (blocking).
+
+    ``token=None`` (the default) generates an ephemeral bearer token, so the
+    server is authenticated unless the caller explicitly passes ``token=""``.
+    """
+    if token is None:
+        token = generate_token()
     _STATE["token"] = token
     httpd = ThreadingHTTPServer((host, port), EngineRequestHandler)
     log.info("engine façade listening on http://%s:%d (auth=%s)", host, port, bool(token))
     print(f"Bounty Mode engine façade on http://{host}:{port}  (auth={'on' if token else 'off'})")
+    if token:
+        print(f"  bearer token: {token}")
+        print(f"  send it as:   Authorization: Bearer {token}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -186,12 +246,13 @@ def _parse_args(argv: Optional[list] = None) -> Tuple[str, int, str]:
     p.add_argument("--no-auth", action="store_true",
                    help="explicitly run without a token (loopback only)")
     args = p.parse_args(argv)
-    token = "" if args.no_auth else args.token
-    if not token and not args.no_auth and args.host not in ("127.0.0.1", "localhost"):
-        raise SystemExit(
-            "refusing to bind a non-loopback address without a token; "
-            "set --token/$BOUNTYMODE_ENGINE_TOKEN or pass --no-auth"
-        )
+    if args.no_auth:
+        if args.host not in _LOOPBACK_HOSTS:
+            raise SystemExit("--no-auth is only allowed on a loopback address")
+        return args.host, args.port, ""
+    # Default to an ephemeral token: the server is authenticated unless the
+    # operator explicitly opts out with --no-auth.
+    token = (args.token or "").strip() or generate_token()
     return args.host, args.port, token
 
 

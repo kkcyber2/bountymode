@@ -253,7 +253,9 @@ class ChatClient:
                 if not choices:
                     return LLMResult(text="", model=model, ok=False,
                                      error=f"no choices in response: {str(data)[:200]}")
-                text = _strip_reasoning((choices[0].get("message") or {}).get("content", "") or "")
+                first = choices[0] if isinstance(choices[0], dict) else {}
+                message = first.get("message") if isinstance(first.get("message"), dict) else {}
+                text = _strip_reasoning(_coerce_content(message.get("content")))
                 if not text.strip():
                     return LLMResult(text="", model=model, ok=False,
                                      error="empty completion (model returned no content)")
@@ -315,6 +317,33 @@ _REASONING_OPENERS = (
     "thinking process:",
     "let me think",
 )
+
+
+def _coerce_content(content: Any) -> str:
+    """Normalise a completion's ``content`` field to a plain string.
+
+    OpenAI-compatible endpoints are not consistent: ``content`` may be a string,
+    ``None`` (a reasoning model that spent the whole budget on hidden reasoning),
+    or a *list* of content parts (``[{"type": "text", "text": "..."}]``).  A
+    non-string value used to reach ``str.strip`` and raise ``AttributeError``
+    deep in the caller; here it is flattened to text, and anything unusable
+    becomes ``""`` so the caller's empty-completion path handles it.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return str(content)
 
 
 def _strip_reasoning(text: str) -> str:

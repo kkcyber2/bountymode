@@ -20,9 +20,11 @@ Supported inputs
 ``.json``           a scope/profile JSON is passed through as text
 anything else       read as UTF-8 text (best effort)
 
-No third-party dependency is required: ``pdftotext`` (poppler) and the pure
-Python readers are each tried in turn, and the module degrades to a clear
-message rather than an exception.
+``pypdf`` is a declared dependency, so the pure-Python reader is present on
+Windows and Linux alike; ``pdftotext`` (poppler) is an optional second reader.
+When neither is available the module says so explicitly, and when a reader runs
+but finds no text it says the PDF is a scan -- the two failures are never
+conflated.
 """
 
 from __future__ import annotations
@@ -135,6 +137,24 @@ def _read_pdf(path: Path) -> IntakeResult:
             )
         attempts.append(reader_name)
 
+    # Distinguish "no reader is installed" from "a reader ran but found no
+    # text".  The first is a setup problem the user can fix in one command; the
+    # second means the PDF is a scan and needs OCR.  Conflating them sent people
+    # hunting for a text layer that was never the issue.
+    have_pypdf = any(_module_available(m) for m in ("pypdf", "PyPDF2"))
+    have_pdftotext = shutil.which("pdftotext") is not None
+    if not have_pypdf and not have_pdftotext:
+        return IntakeResult(
+            ok=False, path=str(path), kind="pdf",
+            error="no PDF reader is available (neither pypdf nor pdftotext is installed)",
+            hint=(
+                "Install a pure-Python reader with `pip install pypdf` (no system "
+                "packages needed, works on Windows), or install poppler for "
+                "`pdftotext`. Then re-run. You can also paste the scope text "
+                "directly instead of passing a PDF."
+            ),
+        )
+
     return IntakeResult(
         ok=False, path=str(path), kind="pdf",
         error=(
@@ -147,6 +167,16 @@ def _read_pdf(path: Path) -> IntakeResult:
             "text and save it as a .txt file, then pass that instead."
         ),
     )
+
+
+def _module_available(name: str) -> bool:
+    """True when a module can be imported (without importing it for real)."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 # --------------------------------------------------------------------------- #

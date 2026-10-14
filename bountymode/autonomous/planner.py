@@ -217,6 +217,32 @@ def is_testable(target: ScopeTarget) -> bool:
     return "." in pattern and "/" not in pattern
 
 
+#: Label used when a wildcard scope entry must be turned into one concrete,
+#: testable host.  A wildcard is **never** expanded into a scan of every
+#: sub-domain: exactly one representative host is synthesised, it is labelled as
+#: synthesised, and the human approver sees it before anything runs.
+WILDCARD_PROBE_LABEL = "www"
+
+
+def synthesize_from_wildcard(pattern: str) -> Optional[str]:
+    """Turn a wildcard scope entry into ONE concrete, testable host.
+
+    ``*.example.com`` -> ``www.example.com``.  Returns ``None`` when the entry
+    is not a plain host wildcard (a URL glob, a bare ``*``, or a wildcard with
+    no registrable domain), because guessing a concrete target for those would
+    be unsafe.  The synthesised host still has to pass the authorization gate
+    (it matches the original wildcard), so nothing is tested that the program
+    did not already place in scope.
+    """
+    pat = (pattern or "").strip()
+    if not pat.startswith("*."):
+        return None
+    rest = pat[2:].strip()
+    if not rest or "/" in rest or "*" in rest or "." not in rest:
+        return None
+    return f"{WILDCARD_PROBE_LABEL}.{rest}"
+
+
 # --------------------------------------------------------------------------- #
 # plan model
 # --------------------------------------------------------------------------- #
@@ -233,6 +259,10 @@ class PlannedTarget:
     rationale: str = ""
     techniques: List[str] = field(default_factory=list)
     families: List[str] = field(default_factory=list)
+    #: True when this target was synthesised from a wildcard scope entry rather
+    #: than named directly by the program.  Surfaced so the human approver can
+    #: see (and override) it before anything runs.
+    synthesized: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -244,6 +274,7 @@ class PlannedTarget:
             "rationale": self.rationale,
             "techniques": list(self.techniques),
             "families": list(self.families),
+            "synthesized": self.synthesized,
         }
 
 
@@ -309,12 +340,31 @@ class HeuristicPlanner:
             source="heuristic",
         )
 
-        candidates: List[Tuple[float, ScopeTarget, str]] = []
+        candidates: List[Tuple[float, ScopeTarget, str, bool]] = []
         for entry in scope.in_scope:
             if not is_testable(entry):
                 continue
             kind = classify_asset(entry)
-            candidates.append((self._score(entry, kind, scope), entry, kind))
+            candidates.append((self._score(entry, kind, scope), entry, kind, False))
+
+        if not candidates:
+            # A wildcard-only scope (e.g. "*.openai.com") is common.  Rather than
+            # halting with an empty plan, synthesise exactly ONE concrete
+            # representative host per wildcard, label it as synthesised, and let
+            # the human approver see it.  No other sub-domain is ever contacted.
+            for entry in scope.in_scope:
+                synth = synthesize_from_wildcard(entry.pattern)
+                if synth is None:
+                    continue
+                probe = ScopeTarget(pattern=synth, kind=entry.kind, notes=entry.notes)
+                kind = classify_asset(probe)
+                candidates.append((self._score(probe, kind, scope), probe, kind, True))
+                plan.notes.append(
+                    f"Scope entry '{entry.pattern}' is a wildcard; synthesised the "
+                    f"single representative host '{synth}' for testing. No other "
+                    f"sub-domain is contacted, and the human approver sees this "
+                    f"target before anything runs."
+                )
 
         if not candidates:
             plan.notes.append(
@@ -327,7 +377,7 @@ class HeuristicPlanner:
         candidates.sort(key=lambda c: (-c[0], c[1].pattern))
         prohibited = {t.lower() for t in scope.prohibited_techniques}
 
-        for priority, (score, entry, kind) in enumerate(candidates[: self.max_targets], 1):
+        for priority, (score, entry, kind, synthesized) in enumerate(candidates[: self.max_targets], 1):
             domain = KIND_DOMAIN.get(kind, "web_api")
             adapter = DEFAULT_REGISTRY.get(domain)
             techniques = self._select(adapter, kind, prohibited, scope)
@@ -335,6 +385,13 @@ class HeuristicPlanner:
                 {family_of(adapter.require(t)) for t in techniques},
                 key=lambda f: FAMILY_ORDER.index(f) if f in FAMILY_ORDER else 99,
             )
+            rationale = self._rationale(entry, kind, domain, len(techniques))
+            if synthesized:
+                rationale = (
+                    "SYNTHESISED from a wildcard scope entry (not named directly by "
+                    "the program) -- confirm this host is the intended representative "
+                    "before approving. " + rationale
+                )
             plan.targets.append(
                 PlannedTarget(
                     target=entry.pattern,
@@ -342,9 +399,10 @@ class HeuristicPlanner:
                     domain=domain,
                     priority=priority,
                     score=score,
-                    rationale=self._rationale(entry, kind, domain, len(techniques)),
+                    rationale=rationale,
                     techniques=techniques,
                     families=families,
+                    synthesized=synthesized,
                 )
             )
 
