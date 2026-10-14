@@ -162,6 +162,7 @@ class GenericVerifier:
         success_threshold: float = 0.6,
         oracles: Optional[OracleRegistry] = None,
         policy: Any = None,
+        oracle: Optional[Any] = None,
     ) -> None:
         if attempts < 1:
             raise ValueError("attempts must be >= 1")
@@ -169,6 +170,10 @@ class GenericVerifier:
         self.success_threshold = success_threshold
         self.oracles = oracles or ORACLES
         self.policy = policy
+        #: An explicit oracle overrides registry selection.  A web finding is an
+        #: HTTP differential, so the runner passes the web oracle here rather
+        #: than letting a same-named prompt oracle claim the category.
+        self.oracle = oracle
 
     # -- public API -------------------------------------------------------- #
 
@@ -187,7 +192,7 @@ class GenericVerifier:
         ``sender`` performs one probe (see :func:`~bountymode.verify.probe.client_sender`).
         """
         n = attempts or self.attempts
-        oracle = self.oracles.select(finding.category, finding.technique_id)
+        oracle = self.oracle or self.oracles.select(finding.category, finding.technique_id)
         probes = oracle.build_probes(
             category=finding.category, target=finding.target, technique_id=finding.technique_id
         )

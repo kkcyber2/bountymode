@@ -38,6 +38,17 @@ _URL_RE = re.compile(r"https?://[^\s)|\"'`,;\]]+", re.I)
 _WILDCARD_RE = re.compile(r"\*\.(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b", re.I)
 _HOST_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b", re.I)
 
+#: A host or IPv4 address with an explicit port (``127.0.0.1:9099``,
+#: ``api.example.com:8443``).  ``_HOST_RE`` requires a dotted TLD, so an IP:port
+#: target -- which is exactly how a local or staging asset is written -- never
+#: matched it and was silently dropped from the scope.  This pattern is checked
+#: first so a port-pinned target is captured whole, port included.
+_HOSTPORT_RE = re.compile(
+    r"\b(?:(?:\d{1,3}\.){3}\d{1,3}|(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,})"
+    r":\d{1,5}\b",
+    re.I,
+)
+
 #: An in-scope heading.  Real program pages write this many ways: "In Scope",
 #: "In-scope targets", "## 2. Scope", "Scope of this program".  A bare "Scope"
 #: heading counts, but only when it is not the out-of-scope heading -- the
@@ -566,6 +577,11 @@ def _targets_from_row(row: List[str]) -> List[str]:
             if wildcard.lower() not in out:
                 out.append(wildcard.lower())
     if not out:
+        for hostport in _HOSTPORT_RE.findall(blob):
+            hp = hostport.lower()
+            if _is_testable_host(hp) and hp not in out:
+                out.append(hp)
+    if not out:
         for host in _HOST_RE.findall(blob):
             h = host.lower().strip(".")
             if not _is_testable_host(h):
@@ -607,6 +623,11 @@ def _explicit_targets(block: str) -> List[str]:
         for wildcard in _WILDCARD_RE.findall(line):
             add(wildcard.lower())
 
+        # A host:port target (an IP or a host with an explicit port) is captured
+        # whole before the bare-host pass, so the port is not lost.
+        for hostport in _HOSTPORT_RE.findall(line):
+            add(hostport.lower())
+
         for token in _BACKTICK_RE.findall(line):
             for host in _HOST_RE.findall(token):
                 add(host.lower())
@@ -622,7 +643,7 @@ def _explicit_targets(block: str) -> List[str]:
         item = _LIST_ITEM_RE.match(line)
         content = item.group(1) if item else line
         content = content.strip().strip("*_` ").strip()
-        if content and _HOST_RE.fullmatch(content):
+        if content and (_HOST_RE.fullmatch(content) or _HOSTPORT_RE.fullmatch(content)):
             add(content.lower())
 
     return out
@@ -634,9 +655,17 @@ def _is_testable_host(value: str) -> bool:
     Rejects file names (``ai-plugin.json``), the bounty platform's own hosts,
     and the researcher's test-mailbox domain -- none of which are targets, and
     all of which a naive host regex happily picks up out of prose.
+
+    An IPv4 address (with or without a port) is a valid target: a staging or
+    local asset is routinely written that way, and it has no dotted TLD for the
+    host regex to key on.
     """
     host = _host_of(value)
-    if not host or "." not in host:
+    if not host:
+        return False
+    if _IPV4_RE.fullmatch(host):
+        return True
+    if "." not in host:
         return False
     if host.endswith(_NON_HOST_SUFFIXES):
         return False
@@ -653,6 +682,10 @@ def _host_of(target: str) -> str:
         t = t[2:]
     t = re.sub(r"^https?://", "", t)
     return t.split("/")[0].split(":")[0].strip(".")
+
+
+#: A bare IPv4 address.
+_IPV4_RE = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}")
 
 
 def _base_domain(host: str) -> str:

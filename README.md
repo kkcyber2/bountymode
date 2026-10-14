@@ -93,6 +93,31 @@ has **zero runtime dependencies** and runs on the standard library alone.
 
 ## Install
 
+### One-click setup (recommended)
+
+```bash
+# Linux / macOS
+./setup.sh
+
+# Windows
+setup.bat
+
+# or, on any platform
+python setup.py
+```
+
+It does three things and asks for only two inputs:
+
+1. installs the package and its dependencies into the current interpreter;
+2. asks for your **OpenRouter API key** and your **name**, writes them to `.env`
+   (which it also adds to `.gitignore`), and validates the key against OpenRouter;
+3. launches the web UI at http://127.0.0.1:8765.
+
+Pass `--no-install` to skip the install step or `--no-launch` to stop after
+configuration.
+
+### Manual install
+
 ```bash
 # 1. clone
 git clone https://github.com/kkcyber2/bountymode
@@ -489,6 +514,13 @@ bountymode-ui
 ```
 
 Then open **http://127.0.0.1:8765**.
+
+The **Chat (streaming)** tab is the front door: paste the bounty details, press
+*Start*, and the agent streams every stage, each finding as it lands, and the
+final report over Server-Sent Events. A **mid-run instruction** typed while the
+run is in flight is queued and applied at the next stage boundary — no restart
+needed. It is a dry run unless you tick *live*, and a human approver name is
+required before anything is tested.
 
 The **Guided run** tab is the whole engagement in one screen: paste a program
 URL (or the scope text), press *Parse & review scope* to see exactly what was

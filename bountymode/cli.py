@@ -633,8 +633,7 @@ def cmd_pipeline_run(args: argparse.Namespace) -> int:
     print("Final confirmation of a vulnerability is the bounty program's job; "
           "reports state reproducibility and evidence, not certainty.")
     print(f"Reports and evidence: {result.out_dir}/")
-    if not args.live:
-        print("This was a DRY RUN. No live target was contacted.")
+    _print_mode_caveat(result.mode)
     return EXIT_OK if result.ok else EXIT_BLOCKED
 
 
@@ -736,9 +735,22 @@ def cmd_auto_run(args: argparse.Namespace) -> int:
     print("Final confirmation of a vulnerability is the bounty program's job; "
           "reports state reproducibility and evidence, not certainty.")
     print(f"Reports and bundle: {result.out_dir}/reports/")
-    if not args.live:
-        print("This was a DRY RUN. No live target was contacted.")
+    _print_mode_caveat(result.mode)
     return EXIT_OK if result.ok else EXIT_BLOCKED
+
+
+def _print_mode_caveat(mode: str) -> None:
+    """State honestly whether the run touched a real target.
+
+    A web run drives real HTTP against the target even though it is not a
+    ``--live`` remote-engine run, so the old blanket "no live target was
+    contacted" line was false for it.  The caveat now follows the actual mode.
+    """
+    if mode in ("in-process-web", "remote-engine"):
+        print("This run contacted the target over HTTP. Findings are reproducible "
+              "against the target as tested; nothing was submitted anywhere.")
+    else:
+        print("This was a DRY RUN. No live target was contacted.")
 
 
 def cmd_auto_plan(args: argparse.Namespace) -> int:

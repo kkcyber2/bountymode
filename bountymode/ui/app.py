@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..authority.gate import Approval, AuthorizationGate
@@ -234,6 +234,39 @@ class AutoPlanRequest(BaseModel):
     path: str = ""
     program: Optional[str] = None
     platform: Optional[str] = None
+
+
+class ChatRequest(BaseModel):
+    """A chat turn: the bounty details in, a streamed run out."""
+
+    text: str = ""
+    path: str = ""
+    approved_by: str = ""
+    note: str = ""
+    target: str = ""
+    domain: str = ""
+    techniques: Optional[List[str]] = None
+    verify_attempts: int = 5
+    program: Optional[str] = None
+    platform: Optional[str] = None
+    intensity: str = "standard"
+    adapt: bool = True
+    live: bool = False
+    engine: Optional[str] = None
+    token: Optional[str] = None
+    out_dir: str = "chat-run"
+
+
+class InstructionRequest(BaseModel):
+    """A mid-run instruction for a streaming chat session."""
+
+    session_id: str
+    instruction: str
+
+
+#: Live streaming sessions, keyed by session id, so a mid-run instruction can
+#: find the run it belongs to.  Bounded by the process lifetime.
+_CHAT_SESSIONS: Dict[str, Any] = {}
 
 
 def create_app() -> FastAPI:
@@ -818,6 +851,65 @@ def create_app() -> FastAPI:
         else:
             result = runner.run_from_text(req.text, **common)
         return result.to_dict()
+
+    # -- streaming chat ---------------------------------------------------- #
+
+    @app.post("/api/chat/stream")
+    def chat_stream(req: ChatRequest) -> StreamingResponse:
+        """Run the autonomous job and stream progress as Server-Sent Events.
+
+        The user pastes the bounty details; the agent streams each stage, every
+        finding as it lands, and the final report.  A mid-run instruction can be
+        posted to ``/api/chat/instruction`` and is picked up at the next stage
+        boundary (see :class:`~bountymode.autonomous.chat.ChatSession`).
+        """
+        from ..autonomous.chat import ChatSession
+
+        if not (req.path or req.text.strip()):
+            raise HTTPException(status_code=400, detail="supply either text or path")
+        if not req.approved_by.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="approved_by is required: a human must confirm the scope",
+            )
+
+        session = ChatSession(
+            approved_by=req.approved_by,
+            note=req.note,
+            target=req.target,
+            domain=req.domain,
+            techniques=req.techniques,
+            out_dir=req.out_dir,
+            live=req.live,
+            engine=req.engine or "",
+            token=req.token or "",
+            intensity=req.intensity,
+            program=req.program,
+            platform=req.platform,
+            verify_attempts=req.verify_attempts,
+            adapt=req.adapt,
+        )
+        _CHAT_SESSIONS[session.id] = session
+
+        def events():
+            try:
+                for event in session.stream(path=req.path, text=req.text):
+                    yield f"data: {json.dumps(event)}\n\n"
+            except Exception as exc:  # noqa: BLE001 - never break the stream
+                yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            finally:
+                yield "data: {\"type\": \"done\"}\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    @app.post("/api/chat/instruction")
+    def chat_instruction(req: InstructionRequest) -> Dict[str, Any]:
+        """Queue a mid-run instruction for a streaming session."""
+        session = _CHAT_SESSIONS.get(req.session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="unknown session_id")
+        session.instruct(req.instruction)
+        return {"queued": True, "session_id": req.session_id}
 
     # -- frontend ---------------------------------------------------------- #
 

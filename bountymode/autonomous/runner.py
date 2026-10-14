@@ -214,11 +214,21 @@ class AutonomousRunner:
         adapt: bool = True,
         use_llm_planner: bool = False,
         llm_client: Any = None,
+        on_stage: Optional[Callable[[str, bool, str], None]] = None,
     ) -> AutonomousResult:
         result = AutonomousResult(mode="dry-run", out_dir=out_dir, source=source)
         d = Path(out_dir)
         d.mkdir(parents=True, exist_ok=True)
         attempts = verify_attempts or self.default_attempts
+
+        def stage(name: str, ok: bool, detail: str) -> None:
+            """Record a stage and, if a listener is attached, report it live."""
+            result.stages.append(AutoStage(name, ok, detail))
+            if on_stage is not None:
+                try:
+                    on_stage(name, "PASS" if ok else "FAIL", detail)
+                except Exception:  # noqa: BLE001 - a listener must never break a run
+                    pass
 
         # ---- 1. intake --------------------------------------------------- #
         policy_text = ""
@@ -232,11 +242,11 @@ class AutonomousRunner:
                 self._finish(result)
                 return result
             policy_text = read.text
-            result.stages.append(AutoStage(
+            stage(
                 "intake", True,
                 f"read {read.kind} via {read.reader} "
                 f"({read.chars} chars" + (f", {read.pages} pages" if read.pages else "") + ")",
-            ))
+            )
         elif source_kind == "text":
             read = self.intake.read_text(source)
             result.intake = read.to_dict()
@@ -245,9 +255,9 @@ class AutonomousRunner:
                 self._finish(result)
                 return result
             policy_text = read.text
-            result.stages.append(AutoStage("intake", True, f"inline text ({read.chars} chars)"))
+            stage("intake", True, f"inline text ({read.chars} chars)")
         else:
-            result.stages.append(AutoStage("intake", True, "URL source (fetched during import)"))
+            stage("intake", True, "URL source (fetched during import)")
 
         # ---- 2. import --------------------------------------------------- #
         if source_kind == "url":
@@ -269,19 +279,19 @@ class AutonomousRunner:
             result.stages.append(AutoStage("import", False, detail))
             self._finish(result)
             return result
-        result.stages.append(AutoStage(
+        stage(
             "import", True,
             f"{len(imported.scope.in_scope)} in-scope, "
             f"{len(imported.scope.out_of_scope)} exclusions, "
             f"{len(imported.scope.verify_markers)} to verify",
-        ))
+        )
 
         # ---- 3. scope + authorization receipt ---------------------------- #
         if not approved_by:
-            result.stages.append(AutoStage(
+            stage(
                 "scope", False,
                 "no approver named -- a human must confirm the parsed scope before any test",
-            ))
+            )
             result.errors.append("authorization refused: no human approver")
             self._finish(result)
             return result
@@ -290,10 +300,10 @@ class AutonomousRunner:
         )
         result.receipt = receipt.to_dict()
         scope = imported.scope
-        result.stages.append(AutoStage(
+        stage(
             "scope", True,
             f"scope digest {receipt.scope_digest[:12]} approved by {approved_by}",
-        ))
+        )
 
         # ---- 4. plan ----------------------------------------------------- #
         plan = self.planner.plan(scope)
@@ -363,7 +373,15 @@ class AutonomousRunner:
             return result
 
         dispatch: Optional[Callable[[Technique, str], EngineResult]] = None
-        if in_process:
+        # A web/API target is tested over real HTTP, not by prompting a model.
+        # The domain decides which engine drives the scan.
+        is_web = chosen_domain in ("web_api", "web") or getattr(adapter, "scope_kind", "") == "web"
+        if in_process and is_web:
+            from ..engine.web import build_web_dispatch
+
+            dispatch = build_web_dispatch(chosen, allow_writes=True)
+            result.mode = "in-process-web"
+        elif in_process:
             dispatch = build_local_dispatch(
                 model="", intensity=intensity, offline=offline, simulate_vulnerable=offline,
             )
@@ -396,23 +414,32 @@ class AutonomousRunner:
         result.errors.extend(case.errors)
         result.requests_made = case.requests_made
         runner.write_result(case, str(d / "case-result.json"))
-        result.stages.append(AutoStage(
+        stage(
             "scan", True,
             f"{result.requests_made} request(s), {len(result.findings)} finding(s) "
             f"[{result.mode}]" + (f"; STOPPED: {case.stop_reason}" if case.stopped else ""),
-        ))
+        )
 
         # ---- 6. verify --------------------------------------------------- #
-        verifier = GenericVerifier(attempts=attempts)
-        sender = self._verification_sender(in_process=in_process, offline=offline)
+        # A web finding is an HTTP differential, so it is judged by the web
+        # oracle explicitly -- not by a same-named prompt oracle.
+        web_oracle = None
+        if is_web:
+            from ..verify.oracles import web_oracle as _web_oracle
+
+            web_oracle = _web_oracle()
+        verifier = GenericVerifier(attempts=attempts, oracle=web_oracle)
+        sender = self._verification_sender(
+            in_process=in_process, offline=offline, is_web=is_web
+        )
         for finding in result.findings:
             verification = verifier.verify(finding, sender, vault=vault, in_scope=True)
             result.verified.append(verification.to_dict())
-        result.stages.append(AutoStage(
+        stage(
             "verify", True,
             f"{result.verified_count} of {len(result.findings)} finding(s) verified "
             f"({attempts} attempt(s) each)",
-        ))
+        )
 
         # ---- 7. amplify -------------------------------------------------- #
         if result.findings:
@@ -422,12 +449,12 @@ class AutonomousRunner:
             # and the severity label agree before anything is reported.
             self.scorer.score_all(result.findings)
             lifted = sum(1 for a in amps if a.amplified)
-            result.stages.append(AutoStage(
+            stage(
                 "amplify", True,
                 f"{lifted} amplification(s) applied across {len(result.findings)} finding(s)",
-            ))
+            )
         else:
-            result.stages.append(AutoStage("amplify", True, "nothing to amplify"))
+            stage("amplify", True, "nothing to amplify")
 
         # ---- 7b. adaptive follow-up pass --------------------------------- #
         if adapt and result.findings:
@@ -475,10 +502,10 @@ class AutonomousRunner:
             readiness = assess_readiness(finding, report, in_scope=True)
             finding.readiness = readiness.to_dict()
         result.readiness = [dict(f.readiness) for f in result.findings]
-        result.stages.append(AutoStage(
+        stage(
             "readiness", True,
             f"{result.ready_count} of {len(result.findings)} finding(s) are submission-ready",
-        ))
+        )
 
         # ---- 9. report --------------------------------------------------- #
         if write_reports and result.findings:
@@ -500,13 +527,13 @@ class AutonomousRunner:
                     "json": paths["json"],
                 })
             bundle = self._write_bundle(result, d)
-            result.stages.append(AutoStage(
+            stage(
                 "report", True,
                 f"{len(result.reports)} report file(s) + submission bundle "
                 f"({bundle.name}) in {reports_dir}",
-            ))
+            )
         else:
-            result.stages.append(AutoStage("report", True, "nothing to report"))
+            stage("report", True, "nothing to report")
 
         (d / "autonomous-result.json").write_text(
             json.dumps(result.to_dict(), indent=2, sort_keys=True), encoding="utf-8"
@@ -578,8 +605,16 @@ class AutonomousRunner:
         ]
 
     @staticmethod
-    def _verification_sender(*, in_process: bool, offline: bool) -> Any:
-        """Pick the probe sender verification replays against."""
+    def _verification_sender(*, in_process: bool, offline: bool, is_web: bool = False) -> Any:
+        """Pick the probe sender verification replays against.
+
+        A web finding is an HTTP differential, so it is replayed with the web
+        sender; an LLM finding is replayed against the model client.
+        """
+        if is_web:
+            from ..verify.web_oracles import web_sender
+
+            return web_sender()
         if not (in_process and not offline):
             return simulated_sender(SimulatedTarget(vulnerable=True))
         try:

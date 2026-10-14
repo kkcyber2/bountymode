@@ -821,3 +821,18 @@ ORACLES = OracleRegistry()
 
 def select_oracle(category: str, technique_id: str = "") -> Oracle:
     return ORACLES.select(category, technique_id)
+
+
+def web_oracle() -> Oracle:
+    """The oracle for a web/API finding.
+
+    A web finding is an HTTP differential, not a prompt replay, so it is judged
+    by :class:`~bountymode.verify.web_oracles.WebDifferentialOracle`.  It is
+    returned explicitly rather than registered globally, because several web
+    categories (``idor``, ``sqli``, ``xss``, ...) share a name with a
+    prompt-shaped oracle -- a global registration would hijack those names for
+    LLM findings too.
+    """
+    from .web_oracles import WebDifferentialOracle
+
+    return WebDifferentialOracle()

@@ -29,6 +29,7 @@ from .catalogue import EngineCatalogue, default_catalogue
 from .llm import ChatClient, LLMResult, OfflineClient
 from .local import LocalEngine, build_local_dispatch
 from .paths import ENGINE_PATH_ENV, engine_available, engine_root, ensure_on_path
+from .web import WebEngine, build_web_dispatch, supported_techniques as web_techniques
 
 __all__ = [
     "EngineCatalogue",
@@ -38,6 +39,9 @@ __all__ = [
     "OfflineClient",
     "LocalEngine",
     "build_local_dispatch",
+    "WebEngine",
+    "build_web_dispatch",
+    "web_techniques",
     "engine_available",
     "engine_root",
     "ensure_on_path",

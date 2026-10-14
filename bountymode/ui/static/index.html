@@ -64,6 +64,15 @@
   .kv{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
   .kv span{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
     padding:4px 9px;font-size:12px}
+  .chatlog{margin-top:12px;max-height:420px;overflow-y:auto;background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5}
+  .chatlog:empty{display:none}
+  .chatlog .ev{margin:2px 0;white-space:pre-wrap;word-break:break-word}
+  .chatlog .ev-stage{color:var(--accent)}
+  .chatlog .ev-finding{color:var(--high)}
+  .chatlog .ev-instr{color:var(--muted);font-style:italic}
+  .chatlog .ev-err{color:var(--crit)}
   @media(max-width:820px){.wrap{grid-template-columns:1fr}nav{border-right:0;border-bottom:1px solid var(--line)}.row{grid-template-columns:1fr}}
 </style>
 </head>
@@ -77,6 +86,7 @@
 <div class="wrap">
   <nav id="nav">
     <div class="grp">Guided</div>
+    <button data-t="chat">&#128172; Chat (streaming)</button>
     <button data-t="auto" class="active">&#9889; One input (autonomous)</button>
     <button data-t="guided">&#10022; Guided run</button>
     <div class="grp">Workflow</div>
@@ -102,6 +112,36 @@
     <button data-t="repro">U4 · Reproducibility</button>
   </nav>
   <main>
+
+  <section id="chat">
+    <h2>Chat &#8212; paste the bounty details, watch the agent work</h2>
+    <div class="sub">
+      Paste the program details and press <b>Start</b>. The agent streams every
+      stage, each finding as it lands, and the final report. You can type a
+      <b>mid-run instruction</b> at any time and it is applied at the next stage
+      boundary &#8212; no restart needed. Nothing is tested until you press Start,
+      and it is a dry run unless you tick <i>live</i>.
+    </div>
+
+    <div class="card">
+      <label>Bounty details (paste the scope, or a link to the brief)</label>
+      <textarea id="c-text" rows="8" placeholder="# Acme AI Bug Bounty&#10;## In Scope&#10;| Target | Kind |&#10;|---|---|&#10;| api.acme.example | api |&#10;## Out of Scope&#10;- status.acme.example"></textarea>
+      <div class="row">
+        <div><label>Your name (the human approver)</label><input id="c-approver" placeholder="your name"></div>
+        <div><label>Program name (optional)</label><input id="c-program" placeholder="acme-ai"></div>
+      </div>
+      <div class="row">
+        <div><label>Platform</label><input id="c-platform" placeholder="bugcrowd"></div>
+        <div><label><input type="checkbox" id="c-live"> live (contact the target)</label></div>
+      </div>
+      <button class="act" onclick="startChat()">Start streaming run</button>
+      <div id="c-log" class="chatlog"></div>
+      <div class="row" id="c-instr-row" style="display:none">
+        <div style="flex:1"><label>Mid-run instruction</label><input id="c-instr" placeholder="e.g. focus on the auth endpoints"></div>
+        <div style="flex:0"><label>&nbsp;</label><button class="act" onclick="sendInstruction()">Send</button></div>
+      </div>
+    </div>
+  </section>
 
   <section id="auto" class="active">
     <h2>One input &#8212; a program document in, a submission bundle out</h2>
@@ -914,6 +954,97 @@ async function doGuidedRun(){
       <button class="act ghost" onclick="loadFindings()">View findings</button>
     `;
   }catch(e){ $('g-result').innerHTML = '<div class="note err">'+esc(e.message)+'</div>'; }
+}
+
+// ---- streaming chat --------------------------------------------------- //
+let chatSession = null;
+
+function chatLine(cls, text){
+  const log = $('c-log');
+  const div = document.createElement('div');
+  div.className = 'ev ' + cls;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function startChat(){
+  const text = $('c-text').value.trim();
+  const approver = $('c-approver').value.trim();
+  if(!text){ chatLine('ev-err','Paste the bounty details first.'); return; }
+  if(!approver){ chatLine('ev-err','Your name is required \u2014 a human must approve the scope.'); return; }
+  $('c-log').innerHTML = '';
+  $('c-instr-row').style.display = 'flex';
+  chatLine('ev-stage','Starting run \u2026');
+
+  const body = {
+    text: text, approved_by: approver,
+    program: $('c-program').value.trim() || null,
+    platform: $('c-platform').value.trim() || null,
+    live: $('c-live').checked,
+  };
+  try{
+    const resp = await fetch('/api/chat/stream', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    if(!resp.ok){
+      let detail = resp.statusText;
+      try{ const j = await resp.json(); detail = j.detail || detail; }catch(_){}
+      chatLine('ev-err','HTTP '+resp.status+': '+detail);
+      return;
+    }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while(true){
+      const {value, done} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for(const part of parts){
+        const line = part.replace(/^data: /,'').trim();
+        if(!line) continue;
+        let ev; try{ ev = JSON.parse(line); }catch(_){ continue; }
+        renderChatEvent(ev);
+      }
+    }
+  }catch(e){
+    chatLine('ev-err','stream failed: '+e.message);
+  }
+}
+
+function renderChatEvent(ev){
+  if(ev.type === 'start'){
+    chatSession = ev.session_id;
+    chatLine('ev-stage','session '+ev.session_id+' \u00b7 mode '+ev.mode+' \u00b7 approver '+ev.approved_by);
+  } else if(ev.type === 'stage'){
+    chatLine('ev-stage', (ev.status==='PASS'?'\u2713 ':'\u2717 ')+ev.stage.padEnd(10)+' '+ev.detail);
+  } else if(ev.type === 'instruction'){
+    chatLine('ev-instr','\u21b3 instruction applied at '+ev.applied_at+': '+ev.text);
+  } else if(ev.type === 'finding'){
+    chatLine('ev-finding','\u2022 ['+(ev.verified?'VERIFIED':'unverified')+'] '+ev.severity+' \u00b7 '+(ev.cvss||'')+' \u00b7 '+ev.title);
+  } else if(ev.type === 'result'){
+    const d = ev.result || {};
+    chatLine('ev-stage','done \u2014 '+(d.findings||[]).length+' finding(s), '+(d.ready_count||0)+' submission-ready');
+    if(d.out_dir) chatLine('ev-stage','reports: '+d.out_dir+'/reports/');
+    $('c-instr-row').style.display = 'none';
+  } else if(ev.type === 'error'){
+    chatLine('ev-err','error: '+ev.message);
+  }
+}
+
+async function sendInstruction(){
+  const text = $('c-instr').value.trim();
+  if(!text || !chatSession) return;
+  try{
+    await fetch('/api/chat/instruction', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: chatSession, instruction: text})
+    });
+    chatLine('ev-instr','\u2192 queued: '+text);
+    $('c-instr').value = '';
+  }catch(e){ chatLine('ev-err','could not send instruction: '+e.message); }
 }
 </script>
 </body>

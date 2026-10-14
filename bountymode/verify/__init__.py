@@ -70,6 +70,7 @@ from .probe import (
     client_sender,
 )
 from .simulate import SimulatedTarget, simulated_sender
+from .web_oracles import WEB_CATEGORIES, WebDifferentialOracle, web_sender
 
 __all__ = [
     # probe
@@ -89,4 +90,6 @@ __all__ = [
     # checks
     "SubmissionReadiness", "SubmissionReadinessChecker", "ReadinessCheck",
     "assess_readiness",
+    # web
+    "WebDifferentialOracle", "web_sender", "WEB_CATEGORIES",
 ]
