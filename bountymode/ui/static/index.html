@@ -488,7 +488,7 @@ trailing noise line</textarea>
         <div><label>Successes</label><input id="rp-successes" value="3"></div>
       </div>
       <button class="act" onclick="doRepro()">Replay</button>
-      <div id="rp-out"></div>
+      <div id="rp-repro-out"></div>
     </div>
   </section>
 
@@ -715,8 +715,8 @@ async function doMultimodal(){
 }
 async function doRepro(){
   try{ const d = await api('/api/upgrades/reproducibility?attempts='+parseInt($('rp-attempts').value)+'&successes='+parseInt($('rp-successes').value), null, 'POST');
-    $('rp-out').innerHTML = `<div class="kv"><span>attempts: ${d.attempts}</span><span>successes: ${d.successes}</span><span>rate: ${d.rate}</span><span>reproducible: <b class="${d.reproducible?'ok':'err'}">${d.reproducible}</b></span><span>stable: ${d.stable}</span></div>`;
-  }catch(e){ $('rp-out').innerHTML='<div class="note err">'+esc(e.message)+'</div>'; }
+    $('rp-repro-out').innerHTML = `<div class="kv"><span>attempts: ${d.attempts}</span><span>successes: ${d.successes}</span><span>rate: ${d.rate}</span><span>reproducible: <b class="${d.reproducible?'ok':'err'}">${d.reproducible}</b></span><span>stable: ${d.stable}</span></div>`;
+  }catch(e){ $('rp-repro-out').innerHTML='<div class="note err">'+esc(e.message)+'</div>'; }
 }
 
 // --- guided run ---------------------------------------------------------- //

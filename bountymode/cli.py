@@ -186,8 +186,65 @@ def cmd_models(args: argparse.Namespace) -> int:
             break
     info["check"] = {"attempted": True, "results": results,
                      "working": next((r["model"] for r in results if r["ok"]), None)}
+
+    if args.list:
+        info["available"] = _list_openrouter_models(cfg)
+
     _print(info)
+    if not info["check"]["working"]:
+        print(
+            "\nNone of the configured models answered. The last error is reported "
+            "above; a 401 usually means the key is wrong, 402 means the account is "
+            "out of credit for a paid model, and 429 means the free tier is busy.",
+            file=sys.stderr,
+        )
     return EXIT_OK
+
+
+def _list_openrouter_models(cfg: Any) -> Dict[str, Any]:
+    """Fetch the live model list from OpenRouter, reporting the real HTTP result.
+
+    ``--check`` proves the *key* works against the configured models.  This proves
+    what the account can actually reach, which is the question a free-tier user is
+    really asking when a model name turns out to be retired.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    url = cfg.llm.base_url.rstrip("/") + "/models"
+    headers = {"Accept": "application/json"}
+    if cfg.llm.api_key:
+        headers["Authorization"] = f"Bearer {cfg.llm.api_key}"
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=30.0) as response:
+            status = response.status
+            payload = _json.loads(response.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as exc:
+        return {"http_status": exc.code, "ok": False,
+                "error": f"HTTP {exc.code}", "models": []}
+    except Exception as exc:  # noqa: BLE001 - a probe must never crash the CLI
+        return {"http_status": None, "ok": False,
+                "error": f"{type(exc).__name__}: {exc}", "models": []}
+
+    entries = payload.get("data") or []
+    free = [m.get("id", "") for m in entries
+            if str(m.get("id", "")).endswith(":free")]
+    known = {cfg.llm.model, *cfg.llm.fallbacks}
+    return {
+        "http_status": status,
+        "ok": True,
+        "count": len(entries),
+        "free_count": len(free),
+        "configured_available": sorted(m for m in known if m and any(
+            e.get("id") == m for e in entries
+        )),
+        "configured_missing": sorted(m for m in known if m and not any(
+            e.get("id") == m for e in entries
+        )),
+        "free_sample": sorted(free)[:12],
+    }
 
 
 def cmd_engine(args: argparse.Namespace) -> int:
@@ -856,6 +913,8 @@ def build_parser() -> argparse.ArgumentParser:
     md.add_argument("--config", default=None, help="path to a bountymode.json config file")
     md.add_argument("--check", action="store_true",
                     help="probe the configured models live (needs an API key)")
+    md.add_argument("--list", action="store_true",
+                    help="with --check, also fetch the provider's live model list")
     md.set_defaults(func=cmd_models)
 
     en = sub.add_parser("engine", help="inspect the vendored in-process engine")

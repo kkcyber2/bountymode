@@ -94,6 +94,9 @@ class AutonomousResult:
     out_dir: str = ""
     started_at: str = field(default_factory=_now_iso)
     finished_at: str = ""
+    #: True when the operator stopped the run before it completed.  Partial
+    #: results are kept and reported, never silently discarded.
+    cancelled: bool = False
 
     # -- derived ----------------------------------------------------------- #
 
@@ -143,6 +146,7 @@ class AutonomousResult:
             "reports": list(self.reports),
             "skipped": list(self.skipped),
             "errors": list(self.errors),
+            "cancelled": self.cancelled,
             "requests_made": self.requests_made,
             "finding_count": len(self.findings),
             "verified_count": self.verified_count,
@@ -215,6 +219,7 @@ class AutonomousRunner:
         use_llm_planner: bool = False,
         llm_client: Any = None,
         on_stage: Optional[Callable[[str, bool, str], None]] = None,
+        control: Optional[Any] = None,
     ) -> AutonomousResult:
         result = AutonomousResult(mode="dry-run", out_dir=out_dir, source=source)
         d = Path(out_dir)
@@ -366,6 +371,15 @@ class AutonomousRunner:
             f"{len(allowed)} of {len(offered)} planned techniques authorized for {chosen}",
         ))
 
+        # A stop request is honoured *before* the scan -- the last point at which
+        # cancelling costs nothing and touches no target.
+        if control is not None and getattr(control, "stopped", False):
+            result.cancelled = True
+            result.stages.append(AutoStage(
+                "scan", False, "stopped by the operator before any request was sent"))
+            self._finish(result)
+            return result
+
         if live and in_process:
             result.errors.append("live and in_process are mutually exclusive")
             result.stages.append(AutoStage("scan", False, "mutually exclusive modes"))
@@ -429,6 +443,20 @@ class AutonomousRunner:
 
             web_oracle = _web_oracle()
         verifier = GenericVerifier(attempts=attempts, oracle=web_oracle)
+
+        # Stopping here keeps everything the scan already found: the findings are
+        # real, they are simply unverified.  Saying so beats pretending the run
+        # produced nothing.
+        if control is not None and getattr(control, "stopped", False):
+            result.cancelled = True
+            result.stages.append(AutoStage(
+                "verify", False,
+                f"stopped by the operator after the scan; {len(result.findings)} "
+                f"finding(s) kept unverified",
+            ))
+            self._finish(result)
+            return result
+
         sender = self._verification_sender(
             in_process=in_process, offline=offline, is_web=is_web
         )

@@ -52,6 +52,11 @@ def _ask(prompt: str, *, default: str = "") -> str:
 
 
 def _read_env() -> dict:
+    """Parse the ``.env`` written by a previous run.
+
+    Deliberately tiny and dependency-free: this runs before the package is
+    installed, so it cannot import anything of ours.
+    """
     values: dict = {}
     if ENV_PATH.exists():
         for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
@@ -59,8 +64,22 @@ def _read_env() -> dict:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
-            values[key.strip()] = value.strip()
+            values[key.strip()] = value.strip().strip('"').strip("'")
     return values
+
+
+def _export_env(values: dict) -> None:
+    """Put the saved values into this process's environment.
+
+    Without this the setup was a no-op for the very thing it was for: `main()`
+    writes the key, then calls `launch()` **in the same process**, and the UI read
+    `os.environ`.  Nothing ever loaded the file, so the operator was told "key
+    saved and validated" and then the UI started with no key -- every LLM-backed
+    feature silently falling back or reporting "no API key configured".
+    """
+    for key, value in values.items():
+        if value:
+            os.environ[key] = value
 
 
 def _write_env(values: dict) -> None:
@@ -186,6 +205,13 @@ def main(argv=None) -> int:
     if not values:
         _say("\n  setup stopped before writing .env.")
         return 1
+    # Tell the operator what to call themselves, since nothing else uses it yet.
+    operator = values.get("BOUNTYMODE_OPERATOR", "").strip()
+    if operator:
+        _say(f"  hello, {operator}.")
+    # `launch()` runs in this process, so the values have to land in the actual
+    # environment -- writing the file is not enough.
+    _export_env(values)
     if "--no-launch" in argv:
         _say("\n  setup complete. Start the UI with: python -m bountymode.ui")
         return 0

@@ -45,6 +45,9 @@ class ChatSession:
     _pending: "queue.Queue[str]" = field(default_factory=queue.Queue, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _instructions: List[str] = field(default_factory=list, repr=False)
+    #: The thing that actually acts on an instruction.  Queuing one was never
+    #: enough -- nothing consulted the queue, so "stop" was silently ignored.
+    _control: Any = field(default=None, repr=False)
 
     # -- mid-run steering -------------------------------------------------- #
 
@@ -56,6 +59,19 @@ class ChatSession:
         with self._lock:
             self._instructions.append(text)
         self._pending.put(text)
+
+    def apply_now(self, instruction: str) -> Dict[str, Any]:
+        """Act on an instruction immediately, not at the next boundary.
+
+        A stop has to take effect *now* to be worth anything -- waiting for the
+        next stage boundary means the scan may already have gone out.  Returns
+        what was understood, so the UI can acknowledge honestly.
+        """
+        from .control import RunControl
+
+        if self._control is None:
+            self._control = RunControl()
+        return self._control.apply(instruction)
 
     def drain_instructions(self) -> List[str]:
         """Return and clear every instruction queued since the last boundary."""
@@ -81,7 +97,11 @@ class ChatSession:
         ``instruction``, ``result``, ``error``.  The caller serialises them (the
         UI uses Server-Sent Events).
         """
+        from .control import RunControl
         from .runner import AutonomousRunner
+
+        control = RunControl()
+        self._control = control
 
         yield {
             "type": "start",
@@ -108,6 +128,7 @@ class ChatSession:
             platform=self.platform,
             verify_attempts=self.verify_attempts,
             adapt=self.adapt,
+            control=control,
         )
 
         # The runner reports each stage through a callback; bridge it to the
@@ -119,8 +140,12 @@ class ChatSession:
         def on_stage(name: str, status: str, detail: str) -> None:
             events.put({"type": "stage", "stage": name, "status": status, "detail": detail})
             for instruction in self.drain_instructions():
+                # Fold the instruction into the live control as well, so it takes
+                # effect at the next boundary rather than only being reported.
+                outcome = control.apply(instruction)
                 events.put({"type": "instruction", "text": instruction,
-                            "applied_at": name})
+                            "applied_at": name, "kind": outcome.get("kind", ""),
+                            "reply": outcome.get("reply", "")})
 
         def work() -> None:
             try:
