@@ -85,3 +85,6 @@ live-test/reports/
 
 # generated example fixture (rebuilt by tools/auto_example.py)
 examples/*.pdf
+
+# local run output
+chat-run/

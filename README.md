@@ -103,7 +103,7 @@ has **zero runtime dependencies** and runs on the standard library alone.
 setup.bat
 
 # or, on any platform
-python setup.py
+python run.py
 ```
 
 It does three things and asks for only two inputs:

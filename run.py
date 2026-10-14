@@ -12,10 +12,14 @@ It does three things, and asks for only two inputs:
 
 Run it directly::
 
-    python setup.py
+    python run.py
 
 or, on a fresh checkout, ``./setup.sh`` (POSIX) / ``setup.bat`` (Windows), which
 just call this file.
+
+This file is named ``run.py``, not ``setup.py``, on purpose: a ``setup.py`` at
+the repository root shadows the build backend and makes ``pip install -e .``
+execute this script instead of building the package.
 """
 
 from __future__ import annotations
@@ -61,7 +65,7 @@ def _read_env() -> dict:
 
 def _write_env(values: dict) -> None:
     lines = [
-        "# Written by setup.py -- do not commit this file.",
+        "# Written by run.py -- do not commit this file.",
         f"OPENROUTER_API_KEY={values.get('OPENROUTER_API_KEY', '')}",
         f"BOUNTYMODE_LLM_API_KEY={values.get('OPENROUTER_API_KEY', '')}",
         f"BOUNTYMODE_OPERATOR={values.get('BOUNTYMODE_OPERATOR', '')}",

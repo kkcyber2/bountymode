@@ -108,7 +108,7 @@ def test_chat_instruction_unknown_session_is_404(client):
 # --------------------------------------------------------------------------- #
 
 def test_setup_writes_env_and_gitignores_it(tmp_path, monkeypatch):
-    import setup as setup_mod
+    import run as setup_mod
 
     monkeypatch.setattr(setup_mod, "ROOT", tmp_path)
     monkeypatch.setattr(setup_mod, "ENV_PATH", tmp_path / ".env")
@@ -122,7 +122,7 @@ def test_setup_writes_env_and_gitignores_it(tmp_path, monkeypatch):
 
 
 def test_setup_validate_key_rejects_empty():
-    import setup as setup_mod
+    import run as setup_mod
 
     ok, message = setup_mod.validate_key("")
     assert not ok and "no key" in message

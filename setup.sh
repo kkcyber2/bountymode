@@ -4,7 +4,7 @@
 #   ./setup.sh
 #
 # Installs the package, asks for your OpenRouter key and name, writes .env, and
-# launches the UI.  Everything real happens in setup.py; this is a thin wrapper
+# launches the UI.  Everything real happens in run.py; this is a thin wrapper
 # so the same command works on every platform.
 set -euo pipefail
 
@@ -19,4 +19,4 @@ if ! command -v "$PY" >/dev/null 2>&1; then
   exit 1
 fi
 
-exec "$PY" setup.py "$@"
+exec "$PY" run.py "$@"

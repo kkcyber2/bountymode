@@ -4,20 +4,20 @@ REM
 REM   setup.bat
 REM
 REM Installs the package, asks for your OpenRouter key and name, writes .env, and
-REM launches the UI.  Everything real happens in setup.py; this is a thin wrapper
+REM launches the UI.  Everything real happens in run.py; this is a thin wrapper
 REM so the same command works on every platform.
 setlocal
 cd /d "%~dp0"
 
 where py >nul 2>nul
 if %errorlevel%==0 (
-  py -3 setup.py %*
+  py -3 run.py %*
   goto :eof
 )
 
 where python >nul 2>nul
 if %errorlevel%==0 (
-  python setup.py %*
+  python run.py %*
   goto :eof
 )
 
